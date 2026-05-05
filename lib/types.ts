@@ -87,6 +87,28 @@ export type StoredMacro = {
   createdAt: string;
 };
 
+export type AudioPresetRule = {
+  id: string;
+  label: string;
+  matchType: "exact" | "keyword";
+  matchValues: string[];
+  volumePercent: number;
+  muted: boolean;
+};
+
+export type StoredAudioPreset = {
+  id?: number;
+  name: string;
+  description: string;
+  color: string;
+  system: boolean;
+  applyToUnmatched: boolean;
+  fallbackVolumePercent: number;
+  fallbackMuted: boolean;
+  rules: AudioPresetRule[];
+  createdAt: string;
+};
+
 export type AppSettings = {
   id: "app-settings";
   obs: ObsSettings;

@@ -24,6 +24,7 @@ import type {
   MacroAction,
   MediaActionMode,
   MediaItem,
+  StoredAudioPreset,
   ObsAudioInput,
   ObsMediaSource,
   ObsScene,
@@ -60,6 +61,12 @@ const initialButtonForm = {
   macroId: "",
 };
 
+const initialAudioPresetForm = {
+  name: "",
+  description: "",
+  color: "#38bdf8",
+};
+
 function createMacroAction(): MacroAction {
   return {
     id: crypto.randomUUID(),
@@ -85,7 +92,9 @@ export default function HomePage() {
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
   const [buttons, setButtons] = useState<StoredButton[]>([]);
   const [macros, setMacros] = useState<StoredMacro[]>([]);
+  const [customAudioPresets, setCustomAudioPresets] = useState<StoredAudioPreset[]>([]);
   const [buttonForm, setButtonForm] = useState(initialButtonForm);
+  const [audioPresetForm, setAudioPresetForm] = useState(initialAudioPresetForm);
   const [macroForm, setMacroForm] = useState<{ id: string; name: string; actions: MacroAction[] }>({
     id: "",
     name: "",
@@ -95,6 +104,15 @@ export default function HomePage() {
   const pollRef = useRef<number | null>(null);
 
   const sceneOptions = useMemo(() => scenes.map((scene) => scene.name), [scenes]);
+  const recommendedAudioPresets = useMemo(() => buildRecommendedAudioPresets(), []);
+  const allAudioPresets = useMemo(
+    () =>
+      [...recommendedAudioPresets, ...customAudioPresets].sort((left, right) => {
+        if (left.system !== right.system) return left.system ? -1 : 1;
+        return left.name.localeCompare(right.name);
+      }),
+    [customAudioPresets, recommendedAudioPresets],
+  );
 
   useEffect(() => {
     void bootstrap();
@@ -124,10 +142,16 @@ export default function HomePage() {
   }
 
   async function loadLocalData() {
-    const [storedMedia, storedButtons, storedMacros] = await Promise.all([db.media.toArray(), db.buttons.toArray(), db.macros.toArray()]);
+    const [storedMedia, storedButtons, storedMacros, storedAudioPresets] = await Promise.all([
+      db.media.toArray(),
+      db.buttons.toArray(),
+      db.macros.toArray(),
+      db.audioPresets.toArray(),
+    ]);
     setMediaItems(storedMedia.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
     setButtons(storedButtons.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
     setMacros(storedMacros.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+    setCustomAudioPresets(storedAudioPresets.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
   }
 
   async function connectObs() {
@@ -223,6 +247,68 @@ export default function HomePage() {
   async function handleMuteToggle(input: ObsAudioInput) {
     await toggleInputMute(input.inputName, input.muted);
     await refreshObsState();
+  }
+
+  async function applyAudioPreset(preset: StoredAudioPreset) {
+    const realInputs = audioInputs.filter((input) => input.inputKind !== "placeholder");
+    if (!realInputs.length) return;
+
+    setBusyAction(`audio-preset-${preset.id ?? preset.name}`);
+
+    try {
+      // Aplica regras por canal para deixar trocas de contexto rápidas no meio da live.
+      for (const input of realInputs) {
+        const rule = preset.rules.find((candidate) => matchesAudioPresetRule(candidate, input.inputName));
+        const targetVolume = rule ? rule.volumePercent : preset.fallbackVolumePercent;
+        const targetMuted = rule ? rule.muted : preset.fallbackMuted;
+
+        if (!rule && !preset.applyToUnmatched) {
+          continue;
+        }
+
+        await setInputVolume(input.inputName, targetVolume);
+        await setInputMute(input.inputName, targetMuted);
+      }
+
+      await refreshObsState();
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function saveCurrentMixAsPreset() {
+    if (!audioInputs.length || !audioPresetForm.name.trim()) return;
+
+    const preset: StoredAudioPreset = {
+      name: audioPresetForm.name.trim(),
+      description: audioPresetForm.description.trim() || "Preset salvo a partir do mix atual do OBS.",
+      color: audioPresetForm.color,
+      system: false,
+      applyToUnmatched: false,
+      fallbackVolumePercent: 0,
+      fallbackMuted: false,
+      rules: audioInputs
+        .filter((input) => input.inputKind !== "placeholder")
+        .map((input) => ({
+          id: crypto.randomUUID(),
+          label: input.inputName,
+          matchType: "exact" as const,
+          matchValues: [input.inputName],
+          volumePercent: input.volumePercent,
+          muted: input.muted,
+        })),
+      createdAt: new Date().toISOString(),
+    };
+
+    await db.audioPresets.add(preset);
+    setAudioPresetForm(initialAudioPresetForm);
+    await loadLocalData();
+  }
+
+  async function removeAudioPreset(presetId?: number) {
+    if (!presetId) return;
+    await db.audioPresets.delete(presetId);
+    await loadLocalData();
   }
 
   async function handleMediaUpload(event: React.ChangeEvent<HTMLInputElement>) {
@@ -1027,9 +1113,89 @@ export default function HomePage() {
       ) : null}
 
       {activeTab === "audio" ? (
-        <section className="mt-6">
+        <section className="mt-6 grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
+          <div className="space-y-6">
+            <Panel title="Presets de áudio" subtitle="Troque rápido entre voz, instrumentos, podcast e live.">
+              <div className="grid gap-4">
+                <div className="rounded-[24px] border border-white/10 bg-white/5 p-4">
+                  <h3 className="text-lg font-black text-white">Salvar mix atual como preset</h3>
+                  <p className="mt-1 text-sm text-slate-400">Use seus volumes atuais do OBS para criar um preset personalizado.</p>
+                  <div className="mt-4 grid gap-3">
+                    <Field label="Nome do preset">
+                      <input
+                        className={inputClass}
+                        value={audioPresetForm.name}
+                        onChange={(event) => setAudioPresetForm((current) => ({ ...current, name: event.target.value }))}
+                      />
+                    </Field>
+                    <Field label="Descrição">
+                      <input
+                        className={inputClass}
+                        value={audioPresetForm.description}
+                        onChange={(event) => setAudioPresetForm((current) => ({ ...current, description: event.target.value }))}
+                      />
+                    </Field>
+                    <Field label="Cor">
+                      <input
+                        className={`${inputClass} h-12`}
+                        type="color"
+                        value={audioPresetForm.color}
+                        onChange={(event) => setAudioPresetForm((current) => ({ ...current, color: event.target.value }))}
+                      />
+                    </Field>
+                    <div className="flex flex-wrap gap-3">
+                      <button className="rounded-full bg-accent px-5 py-3 text-sm font-black text-slate-950" onClick={() => void saveCurrentMixAsPreset()}>
+                        Salvar preset atual
+                      </button>
+                      <button className="rounded-full bg-white/10 px-5 py-3 text-sm font-bold text-white" onClick={() => setAudioPresetForm(initialAudioPresetForm)}>
+                        Limpar
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3">
+                  {allAudioPresets.map((preset) => (
+                    <div key={`${preset.system ? "system" : "custom"}-${preset.id ?? preset.name}`} className="rounded-[24px] border border-white/10 bg-white/5 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="mb-2 inline-flex rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-slate-950" style={{ background: preset.color }}>
+                            {preset.system ? "Recomendado" : "Personalizado"}
+                          </div>
+                          <h3 className="text-lg font-black text-white">{preset.name}</h3>
+                          <p className="mt-1 text-sm leading-6 text-slate-400">{preset.description}</p>
+                          <p className="mt-2 text-xs uppercase tracking-[0.18em] text-slate-500">
+                            {preset.rules.length} regras {preset.applyToUnmatched ? "• aplica fallback nos demais canais" : "• mantém canais não mapeados"}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            className="rounded-full bg-accent px-4 py-2 text-xs font-black text-slate-950"
+                            onClick={() => void applyAudioPreset(preset)}
+                          >
+                            {busyAction === `audio-preset-${preset.id ?? preset.name}` ? "Aplicando..." : "Aplicar"}
+                          </button>
+                          {!preset.system ? <SmallButton onClick={() => void removeAudioPreset(preset.id)}>Excluir</SmallButton> : null}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Panel>
+
+            <Panel title="Sugestões para som mais nítido" subtitle="Presets ajudam na operação, mas precisam de ganho e filtros corretos.">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <TipCard title="Voz Limpa" text="Deixa microfone principal em evidência e derruba trilha, desktop e instrumentos." />
+                <TipCard title="Voz + Fundo" text="Mantém a fala inteligível com música baixa e sem competir com o host." />
+                <TipCard title="Voz + Violão" text="Equilibra voz na frente e violão abaixo, reduzindo sobras de outros canais." />
+                <TipCard title="Segurança" text="Baixa tudo alguns degraus para evitar sustos, clipping e transições abruptas." />
+              </div>
+            </Panel>
+          </div>
+
           <Panel title="Mixer de áudio" subtitle="Volume e mute em tempo real para no mínimo 12 canais.">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
               {paddedAudioInputs().map((input) => (
                 <div key={input.inputName} className="rounded-[24px] border border-white/10 bg-white/5 p-4">
                   <div className="flex items-start justify-between gap-3">
@@ -1264,6 +1430,15 @@ function StatusCard({ label, value, accent }: { label: string; value: string; ac
   );
 }
 
+function TipCard({ title, text }: { title: string; text: string }) {
+  return (
+    <div className="rounded-[22px] border border-white/10 bg-white/5 p-4">
+      <h3 className="text-base font-black text-white">{title}</h3>
+      <p className="mt-2 text-sm leading-6 text-slate-400">{text}</p>
+    </div>
+  );
+}
+
 function MediaSourceCard({
   source,
   mediaItems,
@@ -1336,6 +1511,214 @@ function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function matchesAudioPresetRule(rule: StoredAudioPreset["rules"][number], inputName: string) {
+  const normalizedInput = inputName.toLowerCase();
+  return rule.matchValues.some((value) => {
+    const normalizedValue = value.toLowerCase();
+    if (rule.matchType === "exact") {
+      return normalizedInput === normalizedValue;
+    }
+    return normalizedInput.includes(normalizedValue);
+  });
+}
+
+function buildRecommendedAudioPresets(): StoredAudioPreset[] {
+  return [
+    {
+      id: -1,
+      name: "Voz Limpa",
+      description: "Puxa microfones de fala para frente e reduz trilhas, desktop e instrumentos para máxima inteligibilidade.",
+      color: "#1dd3b0",
+      system: true,
+      applyToUnmatched: true,
+      fallbackVolumePercent: 18,
+      fallbackMuted: false,
+      createdAt: "system",
+      rules: [
+        createKeywordRule("Microfones", ["mic", "voz", "voice", "microfone", "host", "talk"], 86, false),
+        createKeywordRule("Música de fundo", ["music", "musica", "trilha", "bgm", "spotify", "playback"], 12, false),
+        createKeywordRule("Desktop", ["desktop", "game", "jogo", "browser", "discord", "chrome"], 10, false),
+        createKeywordRule("Instrumentos", ["violao", "violão", "guitarra", "guitar", "teclado", "keyboard", "baixo", "bass", "bateria", "drums"], 0, true),
+      ],
+    },
+    {
+      id: -2,
+      name: "Voz + Fundo",
+      description: "Mantém a voz clara com trilha ambiente baixa para abertura, espera e transições leves.",
+      color: "#38bdf8",
+      system: true,
+      applyToUnmatched: true,
+      fallbackVolumePercent: 20,
+      fallbackMuted: false,
+      createdAt: "system",
+      rules: [
+        createKeywordRule("Microfones", ["mic", "voz", "voice", "microfone", "host", "talk"], 82, false),
+        createKeywordRule("Música de fundo", ["music", "musica", "trilha", "bgm", "spotify", "playback"], 24, false),
+        createKeywordRule("Desktop", ["desktop", "game", "jogo", "browser", "discord", "chrome"], 12, false),
+        createKeywordRule("Instrumentos", ["violao", "violão", "guitarra", "guitar", "teclado", "keyboard", "baixo", "bass", "bateria", "drums"], 0, true),
+      ],
+    },
+    {
+      id: -3,
+      name: "Voz + Violão",
+      description: "Configuração rápida para live acústica, deixando a voz na frente e o violão logo abaixo.",
+      color: "#f59e0b",
+      system: true,
+      applyToUnmatched: true,
+      fallbackVolumePercent: 12,
+      fallbackMuted: false,
+      createdAt: "system",
+      rules: [
+        createKeywordRule("Microfones", ["mic", "voz", "voice", "microfone", "host", "talk"], 84, false),
+        createKeywordRule("Violão", ["violao", "violão", "acoustic", "acustico"], 68, false),
+        createKeywordRule("Música e desktop", ["music", "musica", "trilha", "desktop", "browser", "spotify"], 0, true),
+        createKeywordRule("Outros instrumentos", ["guitarra", "guitar", "teclado", "keyboard", "baixo", "bass", "bateria", "drums"], 0, true),
+      ],
+    },
+    {
+      id: -4,
+      name: "Teclado + Voz",
+      description: "Boa base para cantor e teclado, com a fala definida e instrumento preenchendo sem embolar.",
+      color: "#a78bfa",
+      system: true,
+      applyToUnmatched: true,
+      fallbackVolumePercent: 16,
+      fallbackMuted: false,
+      createdAt: "system",
+      rules: [
+        createKeywordRule("Microfones", ["mic", "voz", "voice", "microfone", "host", "talk"], 82, false),
+        createKeywordRule("Teclado", ["teclado", "keyboard", "keys", "piano"], 70, false),
+        createKeywordRule("Música e desktop", ["music", "musica", "trilha", "desktop", "browser", "spotify"], 0, true),
+        createKeywordRule("Cordas e bateria", ["violao", "violão", "guitarra", "guitar", "baixo", "bass", "bateria", "drums"], 0, true),
+      ],
+    },
+    {
+      id: -5,
+      name: "Banda / Louvor",
+      description: "Distribuição mais ampla para banda, mantendo voz principal acima e instrumentos equilibrados.",
+      color: "#fb7185",
+      system: true,
+      applyToUnmatched: true,
+      fallbackVolumePercent: 42,
+      fallbackMuted: false,
+      createdAt: "system",
+      rules: [
+        createKeywordRule("Microfones", ["mic", "voz", "voice", "microfone", "host", "talk"], 86, false),
+        createKeywordRule("Violão", ["violao", "violão", "acoustic", "acustico"], 60, false),
+        createKeywordRule("Guitarra", ["guitarra", "guitar", "lead", "solo"], 62, false),
+        createKeywordRule("Teclado", ["teclado", "keyboard", "keys", "piano"], 64, false),
+        createKeywordRule("Baixo", ["baixo", "bass"], 60, false),
+        createKeywordRule("Bateria", ["bateria", "drums", "kick", "snare", "tom", "perc"], 58, false),
+        createKeywordRule("Trilha e desktop", ["music", "musica", "trilha", "desktop", "browser", "spotify"], 0, true),
+      ],
+    },
+    {
+      id: -6,
+      name: "Bateria + Teclado + Guitarra",
+      description: "Preset base para banda sem voz em destaque, com bateria controlada, teclado preenchendo e guitarra presente sem sobrar.",
+      color: "#22c55e",
+      system: true,
+      applyToUnmatched: true,
+      fallbackVolumePercent: 34,
+      fallbackMuted: false,
+      createdAt: "system",
+      rules: [
+        createKeywordRule("Microfones", ["mic", "voz", "voice", "microfone", "host", "talk"], 58, false),
+        createKeywordRule("Guitarra", ["guitarra", "guitar", "lead", "solo", "gt"], 66, false),
+        createKeywordRule("Teclado", ["teclado", "keyboard", "keys", "piano"], 68, false),
+        createKeywordRule("Baixo", ["baixo", "bass"], 60, false),
+        createKeywordRule("Bateria", ["bateria", "drums", "kick", "snare", "tom", "perc", "oh"], 62, false),
+        createKeywordRule("Trilha e desktop", ["music", "musica", "trilha", "desktop", "browser", "spotify", "playback"], 0, true),
+      ],
+    },
+    {
+      id: -7,
+      name: "Voz + Banda Completa",
+      description: "Preset para condução principal da live, mantendo a voz nítida acima de bateria, teclado e guitarra.",
+      color: "#06b6d4",
+      system: true,
+      applyToUnmatched: true,
+      fallbackVolumePercent: 36,
+      fallbackMuted: false,
+      createdAt: "system",
+      rules: [
+        createKeywordRule("Microfones", ["mic", "voz", "voice", "microfone", "host", "talk"], 86, false),
+        createKeywordRule("Guitarra", ["guitarra", "guitar", "lead", "solo", "gt"], 58, false),
+        createKeywordRule("Teclado", ["teclado", "keyboard", "keys", "piano"], 62, false),
+        createKeywordRule("Baixo", ["baixo", "bass"], 56, false),
+        createKeywordRule("Bateria", ["bateria", "drums", "kick", "snare", "tom", "perc", "oh"], 54, false),
+        createKeywordRule("Trilha e desktop", ["music", "musica", "trilha", "desktop", "browser", "spotify", "playback"], 0, true),
+      ],
+    },
+    {
+      id: -8,
+      name: "Solo de Guitarra",
+      description: "Sobe guitarra para momentos de solo, segura teclado e bateria e mantém a voz utilizável se entrar.",
+      color: "#eab308",
+      system: true,
+      applyToUnmatched: true,
+      fallbackVolumePercent: 28,
+      fallbackMuted: false,
+      createdAt: "system",
+      rules: [
+        createKeywordRule("Microfones", ["mic", "voz", "voice", "microfone", "host", "talk"], 74, false),
+        createKeywordRule("Guitarra", ["guitarra", "guitar", "lead", "solo", "gt"], 78, false),
+        createKeywordRule("Teclado", ["teclado", "keyboard", "keys", "piano"], 52, false),
+        createKeywordRule("Baixo", ["baixo", "bass"], 54, false),
+        createKeywordRule("Bateria", ["bateria", "drums", "kick", "snare", "tom", "perc", "oh"], 50, false),
+        createKeywordRule("Trilha e desktop", ["music", "musica", "trilha", "desktop", "browser", "spotify", "playback"], 0, true),
+      ],
+    },
+    {
+      id: -9,
+      name: "Momento de Palavra",
+      description: "Derruba bateria, teclado e guitarra para a fala sair limpa durante avisos, oração, recados ou apresentação.",
+      color: "#14b8a6",
+      system: true,
+      applyToUnmatched: true,
+      fallbackVolumePercent: 12,
+      fallbackMuted: false,
+      createdAt: "system",
+      rules: [
+        createKeywordRule("Microfones", ["mic", "voz", "voice", "microfone", "host", "talk"], 88, false),
+        createKeywordRule("Guitarra", ["guitarra", "guitar", "lead", "solo", "gt"], 8, false),
+        createKeywordRule("Teclado", ["teclado", "keyboard", "keys", "piano"], 10, false),
+        createKeywordRule("Baixo", ["baixo", "bass"], 6, false),
+        createKeywordRule("Bateria", ["bateria", "drums", "kick", "snare", "tom", "perc", "oh"], 6, false),
+        createKeywordRule("Trilha e desktop", ["music", "musica", "trilha", "desktop", "browser", "spotify", "playback"], 0, true),
+      ],
+    },
+    {
+      id: -10,
+      name: "Segurança Anti-Estouro",
+      description: "Reduz todos os canais para um patamar seguro durante teste, retorno alto ou início de live.",
+      color: "#f97316",
+      system: true,
+      applyToUnmatched: true,
+      fallbackVolumePercent: 38,
+      fallbackMuted: false,
+      createdAt: "system",
+      rules: [
+        createKeywordRule("Microfones", ["mic", "voz", "voice", "microfone", "host", "talk"], 72, false),
+        createKeywordRule("Música", ["music", "musica", "trilha", "bgm", "spotify", "playback"], 14, false),
+        createKeywordRule("Desktop", ["desktop", "game", "jogo", "browser", "discord", "chrome"], 10, false),
+        createKeywordRule("Instrumentos", ["violao", "violão", "guitarra", "guitar", "teclado", "keyboard", "baixo", "bass", "bateria", "drums"], 46, false),
+      ],
+    },
+  ];
+}
+
+function createKeywordRule(label: string, matchValues: string[], volumePercent: number, muted: boolean) {
+  return {
+    id: `system-${label}-${matchValues.join("-")}`,
+    label,
+    matchType: "keyword" as const,
+    matchValues,
+    volumePercent,
+    muted,
+  };
 }
 
 declare global {

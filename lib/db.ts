@@ -1,11 +1,12 @@
 import Dexie, { Table } from "dexie";
-import type { AppSettings, MediaItem, StoredButton, StoredMacro } from "@/lib/types";
+import type { AppSettings, MediaItem, StoredAudioPreset, StoredButton, StoredMacro } from "@/lib/types";
 
 export class StreamControlDb extends Dexie {
   settings!: Table<AppSettings, string>;
   media!: Table<MediaItem, number>;
   buttons!: Table<StoredButton, number>;
   macros!: Table<StoredMacro, number>;
+  audioPresets!: Table<StoredAudioPreset, number>;
 
   constructor() {
     super("stream-control-lite-pro-db");
@@ -14,6 +15,13 @@ export class StreamControlDb extends Dexie {
       media: "++id, name, kind, createdAt",
       buttons: "++id, name, type, createdAt",
       macros: "++id, name, createdAt",
+    });
+    this.version(2).stores({
+      settings: "&id",
+      media: "++id, name, kind, createdAt",
+      buttons: "++id, name, type, createdAt",
+      macros: "++id, name, createdAt",
+      audioPresets: "++id, name, system, createdAt",
     });
   }
 }
