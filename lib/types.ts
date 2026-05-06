@@ -4,6 +4,10 @@ export type ObsSettings = {
   password: string;
 };
 
+export type HermesSceneRole = "aguardando" | "louvor" | "oferta" | "biblia" | "pregacao" | "encerramento";
+
+export type HermesMonitorSource = "webAudio" | "obs" | "estimated";
+
 export type MediaKind = "image" | "video" | "audio";
 
 export type MediaItem = {
@@ -112,6 +116,7 @@ export type StoredAudioPreset = {
 export type AppSettings = {
   id: "app-settings";
   obs: ObsSettings;
+  hermes: HermesSettings;
 };
 
 export type ObsScene = {
@@ -124,6 +129,7 @@ export type ObsAudioInput = {
   inputKind?: string;
   volumeMul: number;
   volumePercent: number;
+  volumeDb?: number;
   muted: boolean;
 };
 
@@ -138,3 +144,110 @@ export type ObsMediaSource = {
   inputName: string;
   inputKind?: string;
 };
+
+export type HermesAudioMetrics = {
+  rms: number;
+  peak: number;
+  db: number;
+  clipping: boolean;
+  source: HermesMonitorSource;
+  updatedAt: string;
+};
+
+export type HermesChannel = {
+  id: string;
+  inputName: string;
+  name: string;
+  color: string;
+  aliases: string[];
+  priority: number;
+  currentVolumePercent: number;
+  currentDb: number;
+  estimatedDb: number;
+  rms: number;
+  peak: number;
+  muted: boolean;
+  inputKind?: string;
+  monitorDeviceId?: string;
+  monitorLabel?: string;
+  monitorSource: HermesMonitorSource;
+  clipping: boolean;
+  updatedAt: string;
+};
+
+export type HermesRule = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  priority: number;
+  channelMatch: string[];
+  operator: "lt" | "gt";
+  thresholdDb: number;
+  action: "increase" | "decrease";
+  amountPercent: number;
+  minVolumePercent: number;
+  maxVolumePercent: number;
+  reason: string;
+};
+
+export type HermesCultoStep = {
+  id: string;
+  label: string;
+  sceneRole: HermesSceneRole;
+  offsetMinutes: number;
+  description: string;
+};
+
+export type HermesCultoRun = {
+  startedAt: string;
+  active: boolean;
+  currentStepId: string;
+};
+
+export type HermesSceneMap = Record<HermesSceneRole, string>;
+
+export type HermesSettings = {
+  autoMode: boolean;
+  sceneMap: HermesSceneMap;
+  defaultMonitorDeviceId?: string;
+  commandHistory: string[];
+  cultoRun?: HermesCultoRun | null;
+};
+
+export type HermesParsedCommand =
+  | {
+      type: "scene";
+      sceneName: string;
+      confidence: number;
+      response: string;
+    }
+  | {
+      type: "volume";
+      inputName: string;
+      deltaPercent: number;
+      confidence: number;
+      response: string;
+    }
+  | {
+      type: "mute";
+      inputName: string;
+      state: boolean;
+      confidence: number;
+      response: string;
+    }
+  | {
+      type: "autoMode";
+      enabled: boolean;
+      confidence: number;
+      response: string;
+    }
+  | {
+      type: "startCulto";
+      confidence: number;
+      response: string;
+    }
+  | {
+      type: "unknown";
+      confidence: number;
+      response: string;
+    };

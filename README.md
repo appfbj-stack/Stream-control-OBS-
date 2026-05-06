@@ -16,6 +16,10 @@ MVP PWA para controle remoto de cenas, áudio, mídia e macros no OBS Studio usa
 - troca de cenas
 - start/stop stream
 - mixer com até 12+ canais de áudio
+- Hermes AI Controller com modo automático para cultos
+- roteiro automático de culto por cena e tempo
+- comandos em linguagem natural para cena e áudio
+- monitoramento de áudio com Web Audio API
 - upload e gerenciamento de mídia local
 - troca de arquivo em fonte de mídia do OBS
 - play/stop de mídia
@@ -64,6 +68,8 @@ Abra `http://localhost:3000`.
 1. Ative o `obs-websocket` no OBS Studio.
 2. Use a porta `4455` ou a que estiver configurada no plugin.
 3. Informe IP, porta e senha na tela `OBS`.
+4. Crie as cenas `Aguardando`, `Louvor`, `Oferta`, `Biblia`, `Pregacao` e `Encerramento` para usar o roteiro automático do Hermes.
+5. Se quiser medição em tempo real por dispositivo, permita acesso ao microfone no navegador e associe cada canal no painel `Hermes`.
 
 ## Deploy na Vercel
 

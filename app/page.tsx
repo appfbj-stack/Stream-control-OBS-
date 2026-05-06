@@ -1,26 +1,34 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { HermesController } from "@/components/hermes-controller";
+import { startAudioMonitor } from "@/lib/audio-monitor";
 import { db, DEFAULT_SETTINGS } from "@/lib/db";
+import { DEFAULT_CULTO_STEPS, DEFAULT_HERMES_RULES, applyAudioMetrics, evaluateHermesRules, getCultoStep, parseCommand, syncHermesChannels, volumePercentToDb } from "@/lib/hermes";
 import {
+  changeScene,
   connectToObs,
   controlMediaSource,
+  connectOBS,
+  getStreamActive,
   loadAudioInputs,
   loadMediaSources,
   loadSceneItems,
   loadScenes,
+  muteInput,
   obs,
   replaceMediaInSource,
   setInputMute,
   setInputVolume,
+  setVolume,
   setSceneItemVisibility,
   setStreamState,
   switchScene,
   toggleInputMute,
-  getStreamActive,
 } from "@/lib/obs";
 import type {
   AppSettings,
+  HermesChannel,
   MacroAction,
   MediaActionMode,
   MediaItem,
@@ -34,12 +42,13 @@ import type {
   StoredMacro,
 } from "@/lib/types";
 
-type TabKey = "buttons" | "audio" | "media" | "config";
+type TabKey = "buttons" | "audio" | "media" | "hermes" | "config";
 
 const tabs: { key: TabKey; label: string }[] = [
   { key: "buttons", label: "Botões" },
   { key: "audio", label: "Áudio" },
   { key: "media", label: "Mídia" },
+  { key: "hermes", label: "Hermes" },
   { key: "config", label: "OBS" },
 ];
 
@@ -93,6 +102,10 @@ export default function HomePage() {
   const [buttons, setButtons] = useState<StoredButton[]>([]);
   const [macros, setMacros] = useState<StoredMacro[]>([]);
   const [customAudioPresets, setCustomAudioPresets] = useState<StoredAudioPreset[]>([]);
+  const [hermesChannels, setHermesChannels] = useState<HermesChannel[]>([]);
+  const [commandText, setCommandText] = useState("");
+  const [commandFeedback, setCommandFeedback] = useState("Hermes pronto para interpretar comandos.");
+  const [availableAudioDevices, setAvailableAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [buttonForm, setButtonForm] = useState(initialButtonForm);
   const [audioPresetForm, setAudioPresetForm] = useState(initialAudioPresetForm);
   const [macroForm, setMacroForm] = useState<{ id: string; name: string; actions: MacroAction[] }>({
@@ -102,6 +115,7 @@ export default function HomePage() {
   });
   const [busyAction, setBusyAction] = useState("");
   const pollRef = useRef<number | null>(null);
+  const monitorRef = useRef<Map<string, () => Promise<void>>>(new Map());
 
   const sceneOptions = useMemo(() => scenes.map((scene) => scene.name), [scenes]);
   const recommendedAudioPresets = useMemo(() => buildRecommendedAudioPresets(), []);
@@ -117,6 +131,7 @@ export default function HomePage() {
   useEffect(() => {
     void bootstrap();
     void loadLocalData();
+    void loadAudioDevices();
 
     const handleBeforeInstallPrompt = (event: Event) => {
       event.preventDefault();
@@ -127,6 +142,10 @@ export default function HomePage() {
     return () => {
       window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
       if (pollRef.current) window.clearInterval(pollRef.current);
+      for (const stopMonitor of monitorRef.current.values()) {
+        void stopMonitor();
+      }
+      monitorRef.current.clear();
       obs.disconnect().catch(() => undefined);
     };
   }, []);
@@ -136,22 +155,51 @@ export default function HomePage() {
     void refreshSceneItems(selectedSceneForItems);
   }, [selectedSceneForItems, obsConnected]);
 
+  useEffect(() => {
+    if (!settings.hermes.autoMode || !obsConnected || !hermesChannels.length) return;
+
+    const interval = window.setInterval(() => {
+      void runHermesAutomation();
+    }, 4000);
+
+    return () => window.clearInterval(interval);
+  }, [settings.hermes.autoMode, obsConnected, hermesChannels]);
+
+  useEffect(() => {
+    const cultoRun = settings.hermes.cultoRun;
+    if (!cultoRun?.active || !obsConnected) return;
+
+    const interval = window.setInterval(() => {
+      void syncCultoScene();
+    }, 5000);
+
+    return () => window.clearInterval(interval);
+  }, [settings.hermes.cultoRun, settings.hermes.sceneMap, obsConnected]);
+
   async function bootstrap() {
     const stored = (await db.settings.get("app-settings")) || DEFAULT_SETTINGS;
-    setSettings(stored);
+    setSettings(mergeSettings(stored));
   }
 
   async function loadLocalData() {
-    const [storedMedia, storedButtons, storedMacros, storedAudioPresets] = await Promise.all([
+    const [storedMedia, storedButtons, storedMacros, storedAudioPresets, storedHermesChannels] = await Promise.all([
       db.media.toArray(),
       db.buttons.toArray(),
       db.macros.toArray(),
       db.audioPresets.toArray(),
+      db.hermesChannels.toArray(),
     ]);
     setMediaItems(storedMedia.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
     setButtons(storedButtons.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
     setMacros(storedMacros.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
     setCustomAudioPresets(storedAudioPresets.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+    setHermesChannels(storedHermesChannels.sort((a, b) => b.priority - a.priority));
+  }
+
+  async function loadAudioDevices() {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    setAvailableAudioDevices(devices.filter((device) => device.kind === "audioinput"));
   }
 
   async function connectObs() {
@@ -159,7 +207,7 @@ export default function HomePage() {
     setConnectionMessage("Conectando ao OBS...");
 
     try {
-      await connectToObs(settings.obs);
+      await connectOBS(settings.obs.host, settings.obs.password, settings.obs.port);
       setObsConnected(true);
       setConnectionMessage("Conectado com sucesso");
       await refreshObsState();
@@ -203,6 +251,11 @@ export default function HomePage() {
     setAudioInputs(nextAudio);
     setMediaSources(nextMedia);
     setStreamActive(nextStream);
+    setHermesChannels((current) => {
+      const synced = syncHermesChannels(current, nextAudio);
+      void db.hermesChannels.bulkPut(synced);
+      return synced;
+    });
 
     if (!selectedSceneForItems && nextScenes[0]) {
       setSelectedSceneForItems(nextScenes[0].name);
@@ -219,10 +272,23 @@ export default function HomePage() {
     setConnectionMessage("Configurações salvas localmente");
   }
 
+  async function updateHermesSettings(patch: Partial<AppSettings["hermes"]>) {
+    const latest = mergeSettings((await db.settings.get("app-settings")) || settings);
+    const next = mergeSettings({
+      ...latest,
+      hermes: {
+        ...latest.hermes,
+        ...patch,
+      },
+    });
+    setSettings(next);
+    await db.settings.put(next);
+  }
+
   async function handleSceneClick(sceneName: string) {
     setBusyAction(`scene-${sceneName}`);
     try {
-      await switchScene(sceneName);
+      await changeScene(sceneName);
       await refreshObsState();
     } finally {
       setBusyAction("");
@@ -241,11 +307,18 @@ export default function HomePage() {
 
   async function handleVolumeChange(inputName: string, value: number) {
     setAudioInputs((current) => current.map((item) => (item.inputName === inputName ? { ...item, volumePercent: value, volumeMul: value / 100 } : item)));
-    await setInputVolume(inputName, value);
+    setHermesChannels((current) =>
+      current.map((channel) =>
+        channel.inputName === inputName
+          ? { ...channel, currentVolumePercent: value, currentDb: volumePercentToDb(value), estimatedDb: volumePercentToDb(value), updatedAt: new Date().toISOString() }
+          : channel,
+      ),
+    );
+    await setVolume(inputName, value);
   }
 
   async function handleMuteToggle(input: ObsAudioInput) {
-    await toggleInputMute(input.inputName, input.muted);
+    await muteInput(input.inputName, !input.muted);
     await refreshObsState();
   }
 
@@ -540,6 +613,136 @@ export default function HomePage() {
     await refreshObsState();
   }
 
+  async function runHermesAutomation() {
+    const actions = evaluateHermesRules(hermesChannels, DEFAULT_HERMES_RULES);
+    if (!actions.length) return;
+
+    const appliedInputs = new Set<string>();
+    for (const action of actions) {
+      if (appliedInputs.has(action.channel.inputName)) continue;
+      appliedInputs.add(action.channel.inputName);
+      await handleVolumeChange(action.channel.inputName, action.nextVolume);
+    }
+
+    if (actions.length) {
+      setCommandFeedback(actions[0]?.reason || "Hermes ajustou o mixer automaticamente.");
+    }
+    await persistHermesChannels();
+  }
+
+  async function startCulto() {
+    const cultoRun = {
+      startedAt: new Date().toISOString(),
+      active: true,
+      currentStepId: DEFAULT_CULTO_STEPS[0].id,
+    };
+    await updateHermesSettings({ cultoRun, autoMode: true });
+    const sceneName = settings.hermes.sceneMap.aguardando || "Aguardando";
+    if (sceneName) {
+      await handleSceneClick(sceneName);
+    }
+    setCommandFeedback("Hermes iniciou o culto e entrou na cena Aguardando.");
+  }
+
+  async function syncCultoScene() {
+    const cultoRun = settings.hermes.cultoRun;
+    if (!cultoRun?.active) return;
+
+    const startedAt = new Date(cultoRun.startedAt).getTime();
+    const step = getCultoStep(Date.now() - startedAt);
+    if (step.id !== cultoRun.currentStepId) {
+      await updateHermesSettings({
+        cultoRun: {
+          ...cultoRun,
+          currentStepId: step.id,
+        },
+      });
+    }
+
+    const sceneName = settings.hermes.sceneMap[step.sceneRole];
+    if (!sceneName) return;
+    if (currentScene !== sceneName) {
+      await handleSceneClick(sceneName);
+      setCommandFeedback(`Hermes mudou automaticamente para ${sceneName}.`);
+    }
+  }
+
+  async function runHermesCommand() {
+    const parsed = parseCommand(commandText, scenes, hermesChannels);
+    setCommandFeedback(parsed.response);
+
+    if (parsed.type === "scene") {
+      await handleSceneClick(parsed.sceneName);
+    }
+    if (parsed.type === "volume") {
+      const channel = hermesChannels.find((item) => item.inputName === parsed.inputName);
+      const nextVolume = Math.max(0, Math.min(100, (channel?.currentVolumePercent || 0) + parsed.deltaPercent));
+      await handleVolumeChange(parsed.inputName, nextVolume);
+      await refreshObsState();
+    }
+    if (parsed.type === "mute") {
+      await muteInput(parsed.inputName, parsed.state);
+      await refreshObsState();
+    }
+    if (parsed.type === "autoMode") {
+      await updateHermesSettings({ autoMode: parsed.enabled });
+    }
+    if (parsed.type === "startCulto") {
+      await startCulto();
+    }
+
+    const nextHistory = [commandText, ...settings.hermes.commandHistory].filter(Boolean).slice(0, 8);
+    await updateHermesSettings({ commandHistory: nextHistory });
+  }
+
+  async function persistHermesChannels(nextChannels = hermesChannels) {
+    if (!nextChannels.length) return;
+    await db.hermesChannels.bulkPut(nextChannels);
+  }
+
+  async function saveHermesScene(role: keyof AppSettings["hermes"]["sceneMap"], sceneName: string) {
+    await updateHermesSettings({
+      sceneMap: {
+        ...settings.hermes.sceneMap,
+        [role]: sceneName,
+      },
+    });
+  }
+
+  async function saveChannelMonitorDevice(channelId: string, deviceId: string) {
+    const nextChannels = hermesChannels.map((channel) => (channel.id === channelId ? { ...channel, monitorDeviceId: deviceId } : channel));
+    setHermesChannels(nextChannels);
+    await persistHermesChannels(nextChannels);
+  }
+
+  async function toggleChannelMonitor(channelId: string) {
+    const currentStop = monitorRef.current.get(channelId);
+    if (currentStop) {
+      await currentStop();
+      monitorRef.current.delete(channelId);
+      const nextChannels = hermesChannels.map((channel) =>
+        channel.id === channelId ? { ...channel, monitorSource: "estimated" as const, rms: 0, peak: 0, clipping: false } : channel,
+      );
+      setHermesChannels(nextChannels);
+      await persistHermesChannels(nextChannels);
+      return;
+    }
+
+    const targetChannel = hermesChannels.find((channel) => channel.id === channelId);
+    if (!targetChannel) return;
+
+    const stopMonitor = await startAudioMonitor(targetChannel.monitorDeviceId || settings.hermes.defaultMonitorDeviceId, async (metrics) => {
+      setHermesChannels((current) => {
+        const nextChannels = current.map((channel) => (channel.id === channelId ? applyAudioMetrics(channel, metrics) : channel));
+        void db.hermesChannels.bulkPut(nextChannels);
+        return nextChannels;
+      });
+    });
+
+    monitorRef.current.set(channelId, stopMonitor);
+    await loadAudioDevices();
+  }
+
   function paddedAudioInputs() {
     const placeholders = Array.from({ length: Math.max(0, 12 - audioInputs.length) }, (_, index) => ({
       inputName: `Canal livre ${index + 1}`,
@@ -584,7 +787,7 @@ export default function HomePage() {
           </div>
         </div>
 
-        <div className="mt-6 grid gap-3 rounded-[24px] bg-panel/80 p-2 sm:grid-cols-4">
+        <div className="mt-6 grid gap-3 rounded-[24px] bg-panel/80 p-2 sm:grid-cols-5">
           {tabs.map((tab) => (
             <button
               key={tab.key}
@@ -1331,6 +1534,32 @@ export default function HomePage() {
         </section>
       ) : null}
 
+      {activeTab === "hermes" ? (
+        <HermesController
+          obsConnected={obsConnected}
+          currentScene={currentScene}
+          connectionMessage={connectionMessage}
+          scenes={scenes}
+          channels={hermesChannels}
+          hermesSettings={settings.hermes}
+          cultoStep={getCultoStep(settings.hermes.cultoRun ? Date.now() - new Date(settings.hermes.cultoRun.startedAt).getTime() : 0)}
+          commandText={commandText}
+          commandFeedback={commandFeedback}
+          availableAudioDevices={availableAudioDevices}
+          runningCulto={Boolean(settings.hermes.cultoRun?.active)}
+          onCommandTextChange={setCommandText}
+          onConnect={() => void connectObs()}
+          onDisconnect={() => void disconnectObs()}
+          onToggleAuto={() => void updateHermesSettings({ autoMode: !settings.hermes.autoMode })}
+          onStartCulto={() => void startCulto()}
+          onChangeScene={(sceneName) => void handleSceneClick(sceneName)}
+          onRunCommand={() => void runHermesCommand()}
+          onSaveSceneMap={(role, sceneName) => void saveHermesScene(role, sceneName)}
+          onSaveMonitorDevice={(channelId, deviceId) => void saveChannelMonitorDevice(channelId, deviceId)}
+          onToggleMonitor={(channelId) => void toggleChannelMonitor(channelId)}
+        />
+      ) : null}
+
       {activeTab === "config" ? (
         <section className="mt-6 grid gap-6 lg:grid-cols-[0.92fr_1.08fr]">
           <Panel title="Conexão com OBS" subtitle="Informe IP, porta 4455 e senha.">
@@ -1718,6 +1947,26 @@ function createKeywordRule(label: string, matchValues: string[], volumePercent: 
     matchValues,
     volumePercent,
     muted,
+  };
+}
+
+function mergeSettings(settings: Partial<AppSettings> | AppSettings): AppSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...settings,
+    obs: {
+      ...DEFAULT_SETTINGS.obs,
+      ...settings.obs,
+    },
+    hermes: {
+      ...DEFAULT_SETTINGS.hermes,
+      ...settings.hermes,
+      sceneMap: {
+        ...DEFAULT_SETTINGS.hermes.sceneMap,
+        ...settings.hermes?.sceneMap,
+      },
+      commandHistory: settings.hermes?.commandHistory || DEFAULT_SETTINGS.hermes.commandHistory,
+    },
   };
 }
 
