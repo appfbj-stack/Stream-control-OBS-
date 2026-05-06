@@ -49,6 +49,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     defaultMonitorDeviceId: "",
     commandHistory: [],
     cultoRun: null,
+    aiProvider: "openrouter",
+    aiModel: "deepseek/deepseek-chat-v3-0324",
+    systemPrompt:
+      "Voce e Hermes, assistente de automacao de culto. Responda em portugues claro, curto e operacional. Quando houver intencao de controle do OBS, devolva acoes estruturadas seguras.",
+    speakResponses: false,
     sceneMap: {
       aguardando: "Aguardando",
       louvor: "Louvor",

@@ -212,7 +212,28 @@ export type HermesSettings = {
   defaultMonitorDeviceId?: string;
   commandHistory: string[];
   cultoRun?: HermesCultoRun | null;
+  aiProvider: "openai" | "openrouter" | "ollama";
+  aiModel: string;
+  systemPrompt: string;
+  speakResponses: boolean;
 };
+
+export type HermesChatRole = "system" | "user" | "assistant";
+
+export type HermesChatMessage = {
+  id: string;
+  role: HermesChatRole;
+  content: string;
+  createdAt: string;
+};
+
+export type HermesAction =
+  | { type: "scene"; sceneName: string }
+  | { type: "volume"; inputName: string; deltaPercent: number }
+  | { type: "mute"; inputName: string; state: boolean }
+  | { type: "autoMode"; enabled: boolean }
+  | { type: "startCulto" }
+  | { type: "status" };
 
 export type HermesParsedCommand =
   | {

@@ -63,6 +63,37 @@ npm run dev
 
 Abra `http://localhost:3000`.
 
+## Hermes Chat
+
+O chat do Hermes roda na aba `Hermes` e usa a rota `app/api/hermes/chat`.
+
+Para `OpenAI`, configure:
+
+```bash
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-4.1-mini
+```
+
+Para `Ollama`, configure:
+
+```bash
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=llama3.1
+```
+
+O provedor e o modelo tambem podem ser ajustados pela interface do app.
+
+Para `OpenRouter` com `DeepSeek`, configure:
+
+```bash
+OPENROUTER_API_KEY=...
+OPENROUTER_MODEL=deepseek/deepseek-chat-v3-0324
+OPENROUTER_SITE_URL=http://localhost:3000
+OPENROUTER_APP_NAME=Hermes AI Controller
+```
+
+Se quiser usar esse fluxo pela interface, selecione `OpenRouter` como provedor e deixe o modelo como `deepseek/deepseek-chat-v3-0324` ou outro modelo DeepSeek publicado no OpenRouter.
+
 ## Configuração no OBS
 
 1. Ative o `obs-websocket` no OBS Studio.

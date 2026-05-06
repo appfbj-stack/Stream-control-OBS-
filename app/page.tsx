@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { HermesController } from "@/components/hermes-controller";
 import { startAudioMonitor } from "@/lib/audio-monitor";
 import { db, DEFAULT_SETTINGS } from "@/lib/db";
-import { DEFAULT_CULTO_STEPS, DEFAULT_HERMES_RULES, applyAudioMetrics, evaluateHermesRules, getCultoStep, parseCommand, syncHermesChannels, volumePercentToDb } from "@/lib/hermes";
+import { DEFAULT_CULTO_STEPS, DEFAULT_HERMES_RULES, applyAudioMetrics, evaluateHermesRules, getCultoStep, syncHermesChannels, volumePercentToDb } from "@/lib/hermes";
 import {
   changeScene,
   connectToObs,
@@ -29,6 +29,7 @@ import {
 import type {
   AppSettings,
   HermesChannel,
+  HermesChatMessage,
   MacroAction,
   MediaActionMode,
   MediaItem,
@@ -40,6 +41,7 @@ import type {
   StoredButton,
   StoredButtonType,
   StoredMacro,
+  HermesAction,
 } from "@/lib/types";
 
 type TabKey = "buttons" | "audio" | "media" | "hermes" | "config";
@@ -103,6 +105,8 @@ export default function HomePage() {
   const [macros, setMacros] = useState<StoredMacro[]>([]);
   const [customAudioPresets, setCustomAudioPresets] = useState<StoredAudioPreset[]>([]);
   const [hermesChannels, setHermesChannels] = useState<HermesChannel[]>([]);
+  const [chatMessages, setChatMessages] = useState<HermesChatMessage[]>([]);
+  const [chatBusy, setChatBusy] = useState(false);
   const [commandText, setCommandText] = useState("");
   const [commandFeedback, setCommandFeedback] = useState("Hermes pronto para interpretar comandos.");
   const [availableAudioDevices, setAvailableAudioDevices] = useState<MediaDeviceInfo[]>([]);
@@ -667,34 +671,6 @@ export default function HomePage() {
     }
   }
 
-  async function runHermesCommand() {
-    const parsed = parseCommand(commandText, scenes, hermesChannels);
-    setCommandFeedback(parsed.response);
-
-    if (parsed.type === "scene") {
-      await handleSceneClick(parsed.sceneName);
-    }
-    if (parsed.type === "volume") {
-      const channel = hermesChannels.find((item) => item.inputName === parsed.inputName);
-      const nextVolume = Math.max(0, Math.min(100, (channel?.currentVolumePercent || 0) + parsed.deltaPercent));
-      await handleVolumeChange(parsed.inputName, nextVolume);
-      await refreshObsState();
-    }
-    if (parsed.type === "mute") {
-      await muteInput(parsed.inputName, parsed.state);
-      await refreshObsState();
-    }
-    if (parsed.type === "autoMode") {
-      await updateHermesSettings({ autoMode: parsed.enabled });
-    }
-    if (parsed.type === "startCulto") {
-      await startCulto();
-    }
-
-    const nextHistory = [commandText, ...settings.hermes.commandHistory].filter(Boolean).slice(0, 8);
-    await updateHermesSettings({ commandHistory: nextHistory });
-  }
-
   async function persistHermesChannels(nextChannels = hermesChannels) {
     if (!nextChannels.length) return;
     await db.hermesChannels.bulkPut(nextChannels);
@@ -741,6 +717,121 @@ export default function HomePage() {
 
     monitorRef.current.set(channelId, stopMonitor);
     await loadAudioDevices();
+  }
+
+  async function runHermesCommand() {
+    if (!commandText.trim()) return;
+
+    const userMessage: HermesChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: commandText.trim(),
+      createdAt: new Date().toISOString(),
+    };
+
+    const nextMessages = [...chatMessages, userMessage];
+    setChatMessages(nextMessages);
+    setChatBusy(true);
+
+    try {
+      const response = await fetch("/api/hermes/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          provider: settings.hermes.aiProvider,
+          model: settings.hermes.aiModel,
+          systemPrompt: settings.hermes.systemPrompt,
+          messages: nextMessages.slice(-8).map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+          context: {
+            currentScene,
+            autoMode: settings.hermes.autoMode,
+            scenes: scenes.map((scene) => scene.name),
+            channels: hermesChannels.map((channel) => ({
+              inputName: channel.inputName,
+              name: channel.name,
+              currentVolumePercent: channel.currentVolumePercent,
+              currentDb: channel.currentDb,
+              muted: channel.muted,
+            })),
+          },
+        }),
+      });
+
+      const payload = (await response.json()) as { reply?: string; actions?: HermesAction[]; error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Falha ao consultar Hermes.");
+      }
+
+      const assistantMessage: HermesChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: payload.reply || "Hermes respondeu sem texto.",
+        createdAt: new Date().toISOString(),
+      };
+
+      setChatMessages((current) => [...current, assistantMessage]);
+      setCommandFeedback(assistantMessage.content);
+      if (settings.hermes.speakResponses) {
+        speakText(assistantMessage.content);
+      }
+
+      for (const action of payload.actions || []) {
+        await executeHermesAction(action);
+      }
+
+      const nextHistory = [userMessage.content, ...settings.hermes.commandHistory].slice(0, 8);
+      await updateHermesSettings({ commandHistory: nextHistory });
+      setCommandText("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Falha ao consultar Hermes.";
+      setCommandFeedback(message);
+      setChatMessages((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: `Erro: ${message}`,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
+  async function executeHermesAction(action: HermesAction) {
+    if (action.type === "scene") {
+      await handleSceneClick(action.sceneName);
+      return;
+    }
+    if (action.type === "volume") {
+      const channel = hermesChannels.find((item) => item.inputName === action.inputName);
+      const nextVolume = Math.max(0, Math.min(100, (channel?.currentVolumePercent || 0) + action.deltaPercent));
+      await handleVolumeChange(action.inputName, nextVolume);
+      await refreshObsState();
+      return;
+    }
+    if (action.type === "mute") {
+      await muteInput(action.inputName, action.state);
+      await refreshObsState();
+      return;
+    }
+    if (action.type === "autoMode") {
+      await updateHermesSettings({ autoMode: action.enabled });
+      return;
+    }
+    if (action.type === "startCulto") {
+      await startCulto();
+      return;
+    }
+    if (action.type === "status") {
+      await refreshObsState();
+    }
   }
 
   function paddedAudioInputs() {
@@ -1545,6 +1636,8 @@ export default function HomePage() {
           cultoStep={getCultoStep(settings.hermes.cultoRun ? Date.now() - new Date(settings.hermes.cultoRun.startedAt).getTime() : 0)}
           commandText={commandText}
           commandFeedback={commandFeedback}
+          chatMessages={chatMessages}
+          chatBusy={chatBusy}
           availableAudioDevices={availableAudioDevices}
           runningCulto={Boolean(settings.hermes.cultoRun?.active)}
           onCommandTextChange={setCommandText}
@@ -1557,6 +1650,10 @@ export default function HomePage() {
           onSaveSceneMap={(role, sceneName) => void saveHermesScene(role, sceneName)}
           onSaveMonitorDevice={(channelId, deviceId) => void saveChannelMonitorDevice(channelId, deviceId)}
           onToggleMonitor={(channelId) => void toggleChannelMonitor(channelId)}
+          onSaveAiProvider={(provider) => void updateHermesSettings({ aiProvider: provider })}
+          onSaveAiModel={(model) => void updateHermesSettings({ aiModel: model })}
+          onSaveSystemPrompt={(prompt) => void updateHermesSettings({ systemPrompt: prompt })}
+          onToggleSpeakResponses={() => void updateHermesSettings({ speakResponses: !settings.hermes.speakResponses })}
         />
       ) : null}
 
@@ -1975,6 +2072,14 @@ declare global {
     prompt: () => Promise<void>;
     userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
   }
+}
+
+function speakText(text: string) {
+  if (typeof window === "undefined" || !window.speechSynthesis) return;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = "pt-BR";
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utterance);
 }
 
 const inputClass =

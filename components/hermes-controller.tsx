@@ -1,6 +1,6 @@
 "use client";
 
-import type { HermesChannel, HermesCultoStep, HermesSettings, ObsScene } from "@/lib/types";
+import type { HermesChannel, HermesChatMessage, HermesCultoStep, HermesSettings, ObsScene } from "@/lib/types";
 
 type HermesControllerProps = {
   obsConnected: boolean;
@@ -12,6 +12,8 @@ type HermesControllerProps = {
   cultoStep: HermesCultoStep;
   commandText: string;
   commandFeedback: string;
+  chatMessages: HermesChatMessage[];
+  chatBusy: boolean;
   availableAudioDevices: MediaDeviceInfo[];
   runningCulto: boolean;
   onCommandTextChange: (value: string) => void;
@@ -24,6 +26,10 @@ type HermesControllerProps = {
   onSaveSceneMap: (role: keyof HermesSettings["sceneMap"], sceneName: string) => void;
   onSaveMonitorDevice: (channelId: string, deviceId: string) => void;
   onToggleMonitor: (channelId: string) => void;
+  onSaveAiProvider: (provider: HermesSettings["aiProvider"]) => void;
+  onSaveAiModel: (model: string) => void;
+  onSaveSystemPrompt: (prompt: string) => void;
+  onToggleSpeakResponses: () => void;
 };
 
 const sceneLabels: Array<{ key: keyof HermesSettings["sceneMap"]; label: string; hint: string }> = [
@@ -46,6 +52,8 @@ export function HermesController(props: HermesControllerProps) {
     cultoStep,
     commandText,
     commandFeedback,
+    chatMessages,
+    chatBusy,
     availableAudioDevices,
     runningCulto,
     onCommandTextChange,
@@ -58,6 +66,10 @@ export function HermesController(props: HermesControllerProps) {
     onSaveSceneMap,
     onSaveMonitorDevice,
     onToggleMonitor,
+    onSaveAiProvider,
+    onSaveAiModel,
+    onSaveSystemPrompt,
+    onToggleSpeakResponses,
   } = props;
 
   return (
@@ -95,17 +107,50 @@ export function HermesController(props: HermesControllerProps) {
           </div>
         </HermesPanel>
 
-        <HermesPanel title="Comando natural" subtitle="Interprete frases simples para operação rápida.">
+        <HermesPanel title="Chat Hermes" subtitle="Converse com o agente e deixe ele operar o OBS quando fizer sentido.">
           <div className="grid gap-3">
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="grid gap-2 text-sm font-semibold text-slate-300">
+                <span>Provedor</span>
+                <select className={inputClass} value={hermesSettings.aiProvider} onChange={(event) => onSaveAiProvider(event.target.value as HermesSettings["aiProvider"])}>
+                  <option value="openai">OpenAI</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="ollama">Ollama</option>
+                </select>
+              </label>
+              <label className="grid gap-2 text-sm font-semibold text-slate-300">
+                <span>Modelo</span>
+                <input className={inputClass} value={hermesSettings.aiModel} onChange={(event) => onSaveAiModel(event.target.value)} />
+              </label>
+            </div>
+            <label className="grid gap-2 text-sm font-semibold text-slate-300">
+              <span>Prompt do Hermes</span>
+              <textarea className={inputClass} rows={3} value={hermesSettings.systemPrompt} onChange={(event) => onSaveSystemPrompt(event.target.value)} />
+            </label>
+            <button className={`rounded-full px-5 py-3 text-sm font-black ${hermesSettings.speakResponses ? "bg-sky-300 text-slate-950" : "bg-white/10 text-white"}`} onClick={onToggleSpeakResponses}>
+              {hermesSettings.speakResponses ? "Voz ligada" : "Ativar voz"}
+            </button>
+            <div className="max-h-[280px] space-y-3 overflow-y-auto rounded-[22px] border border-white/10 bg-black/20 p-4">
+              {chatMessages.length ? (
+                chatMessages.map((message) => (
+                  <div key={message.id} className={`rounded-[18px] px-4 py-3 text-sm ${message.role === "user" ? "bg-accent text-slate-950" : "bg-white/10 text-slate-100"}`}>
+                    <div className="mb-1 text-[11px] font-black uppercase tracking-[0.18em]">{message.role === "user" ? "Você" : "Hermes"}</div>
+                    <div className="whitespace-pre-wrap">{message.content}</div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-sm text-slate-400">Nenhuma conversa ainda. Peça uma cena, ajuste de áudio ou orientação operacional.</div>
+              )}
+            </div>
             <textarea
               className={inputClass}
               rows={4}
               value={commandText}
               onChange={(event) => onCommandTextChange(event.target.value)}
-              placeholder="Ex.: trocar para louvor, aumentar microfone, baixar música"
+              placeholder="Ex.: Hermes, troca para louvor e baixa a música"
             />
             <button className="rounded-full bg-accent px-5 py-3 text-sm font-black text-slate-950" onClick={onRunCommand}>
-              Executar comando
+              {chatBusy ? "Hermes pensando..." : "Enviar para Hermes"}
             </button>
             <div className="rounded-[22px] border border-white/10 bg-white/5 p-4 text-sm text-slate-300">{commandFeedback}</div>
           </div>
