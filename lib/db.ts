@@ -44,6 +44,21 @@ export const DEFAULT_SETTINGS: AppSettings = {
     port: 4455,
     password: "",
   },
+  x18: {
+    enabled: true,
+    ip: "172.18.182.1",
+    port: 10024,
+    channelMap: [
+      { channel: 1, name: "Mic Pastor", color: "#22c55e" },
+      { channel: 2, name: "Teclado", color: "#38bdf8" },
+      { channel: 3, name: "Bateria", color: "#f97316" },
+      { channel: 4, name: "Baixo", color: "#fb7185" },
+      { channel: 5, name: "Guitarra", color: "#eab308" },
+      { channel: 6, name: "Instrumentos", color: "#a78bfa" },
+      { channel: 7, name: "Playback", color: "#14b8a6" },
+      { channel: 8, name: "Reaper", color: "#f43f5e" },
+    ],
+  },
   hermes: {
     autoMode: false,
     defaultMonitorDeviceId: "",

@@ -40,6 +40,7 @@ import type {
   AppSettings,
   HermesChannel,
   HermesChatMessage,
+  HermesAction,
   MacroAction,
   MediaActionMode,
   MediaItem,
@@ -51,7 +52,7 @@ import type {
   StoredButton,
   StoredButtonType,
   StoredMacro,
-  HermesAction,
+  X18ChannelMapItem,
 } from "@/lib/types";
 
 type TabKey = "buttons" | "audio" | "media" | "hermes" | "config";
@@ -106,6 +107,8 @@ export default function HomePage() {
   const [streamActive, setStreamActive] = useState(false);
   const [recordActive, setRecordActive] = useState(false);
   const [studioModeEnabled, setStudioModeState] = useState(false);
+  const [x18Connected, setX18Connected] = useState(false);
+  const [x18Message, setX18Message] = useState("X18 pronta para conectar");
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
   const [scenes, setScenes] = useState<ObsScene[]>([]);
   const [audioInputs, setAudioInputs] = useState<ObsAudioInput[]>([]);
@@ -302,6 +305,50 @@ export default function HomePage() {
     });
     setSettings(next);
     await db.settings.put(next);
+  }
+
+  async function updateX18Settings(patch: Partial<AppSettings["x18"]>) {
+    const latest = mergeSettings((await db.settings.get("app-settings")) || settings);
+    const next = mergeSettings({
+      ...latest,
+      x18: {
+        ...latest.x18,
+        ...patch,
+      },
+    });
+    setSettings(next);
+    await db.settings.put(next);
+  }
+
+  async function callX18(command: Record<string, unknown>) {
+    const response = await fetch("/api/x18/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ip: settings.x18.ip,
+        port: settings.x18.port,
+        command,
+      }),
+    });
+
+    const payload = (await response.json()) as { ok?: boolean; reply?: string[]; error?: string };
+    if (!response.ok) {
+      throw new Error(payload.error || "Falha ao falar com a X18.");
+    }
+
+    return payload;
+  }
+
+  async function connectX18() {
+    try {
+      const payload = await callX18({ type: "ping" });
+      setX18Connected(true);
+      setX18Message(payload.reply?.join(" | ") || `X18 conectada em ${settings.x18.ip}:${settings.x18.port}`);
+    } catch (error) {
+      setX18Connected(false);
+      setX18Message(error instanceof Error ? error.message : "Falha ao conectar com a X18.");
+      throw error;
+    }
   }
 
   async function handleSceneClick(sceneName: string) {
@@ -767,6 +814,10 @@ export default function HomePage() {
             obsConnected,
             obsHost: settings.obs.host,
             obsPort: settings.obs.port,
+            x18Connected,
+            x18Ip: settings.x18.ip,
+            x18Port: settings.x18.port,
+            x18ChannelMap: settings.x18.channelMap,
             streamActive,
             recordActive,
             studioModeEnabled,
@@ -886,6 +937,149 @@ export default function HomePage() {
     if (action.type === "triggerTransition") {
       await triggerStudioModeTransition();
       await refreshObsState();
+      return;
+    }
+    if (action.type === "connectX18") {
+      await connectX18();
+      return;
+    }
+    if (action.type === "configureX18") {
+      await updateX18Settings({
+        ...(action.ip ? { ip: action.ip } : {}),
+        ...(typeof action.port === "number" ? { port: action.port } : {}),
+      });
+      return;
+    }
+    if (action.type === "x18Fader") {
+      const channel = resolveX18Channel(action.channel, action.channelName, settings.x18.channelMap);
+      if (channel) {
+        await callX18({ type: "fader", channel, levelPercent: action.levelPercent });
+        setX18Message(`X18 canal ${channel} em ${action.levelPercent}%`);
+      }
+      return;
+    }
+    if (action.type === "x18Mute") {
+      const channel = resolveX18Channel(action.channel, action.channelName, settings.x18.channelMap);
+      if (channel) {
+        await callX18({ type: "mute", channel, muted: action.muted });
+        setX18Message(`X18 canal ${channel} ${action.muted ? "mutado" : "aberto"}`);
+      }
+      return;
+    }
+    if (action.type === "x18Send") {
+      const channel = resolveX18Channel(action.channel, action.channelName, settings.x18.channelMap);
+      if (channel) {
+        await callX18({
+          type: "preset",
+          commands: [
+            {
+              address: `/ch/${String(channel).padStart(2, "0")}/mix/${String(action.bus).padStart(2, "0")}/level`,
+              argType: "f",
+              value: Math.max(0, Math.min(1, action.levelPercent / 100)),
+            },
+          ],
+        });
+        setX18Message(`Send do canal ${channel} para bus ${action.bus} em ${action.levelPercent}%`);
+      }
+      return;
+    }
+    if (action.type === "x18Gain") {
+      await callX18({
+        type: "preset",
+        commands: [{ address: `/headamp/${String(action.channel).padStart(2, "0")}/gain`, argType: "f", value: Math.max(0, Math.min(1, action.gainPercent / 100)) }],
+      });
+      setX18Message(`Gain do headamp ${action.channel} ajustado`);
+      return;
+    }
+    if (action.type === "x18Phantom") {
+      await callX18({
+        type: "preset",
+        commands: [{ address: `/headamp/${String(action.channel).padStart(2, "0")}/phantom`, argType: "i", value: action.enabled ? 1 : 0 }],
+      });
+      setX18Message(`Phantom do canal ${action.channel} ${action.enabled ? "ligado" : "desligado"}`);
+      return;
+    }
+    if (action.type === "x18Eq") {
+      const channel = resolveX18Channel(action.channel, action.channelName, settings.x18.channelMap);
+      if (channel) {
+        const commands = [
+          ...(typeof action.enabled === "boolean" ? [{ address: `/ch/${String(channel).padStart(2, "0")}/eq/on`, argType: "i" as const, value: action.enabled ? 1 : 0 }] : []),
+          ...(typeof action.frequencyPercent === "number"
+            ? [{ address: `/ch/${String(channel).padStart(2, "0")}/eq/${action.band}/f`, argType: "f" as const, value: Math.max(0, Math.min(1, action.frequencyPercent / 100)) }]
+            : []),
+          ...(typeof action.gainPercent === "number"
+            ? [{ address: `/ch/${String(channel).padStart(2, "0")}/eq/${action.band}/g`, argType: "f" as const, value: Math.max(0, Math.min(1, action.gainPercent / 100)) }]
+            : []),
+          ...(typeof action.qPercent === "number"
+            ? [{ address: `/ch/${String(channel).padStart(2, "0")}/eq/${action.band}/q`, argType: "f" as const, value: Math.max(0, Math.min(1, action.qPercent / 100)) }]
+            : []),
+        ];
+        await callX18({ type: "preset", commands });
+        setX18Message(`EQ da X18 ajustado no canal ${channel}`);
+      }
+      return;
+    }
+    if (action.type === "x18Gate") {
+      const channel = resolveX18Channel(action.channel, action.channelName, settings.x18.channelMap);
+      if (channel) {
+        const commands = [
+          { address: `/ch/${String(channel).padStart(2, "0")}/gate/on`, argType: "i" as const, value: action.enabled ? 1 : 0 },
+          ...(typeof action.thresholdPercent === "number"
+            ? [{ address: `/ch/${String(channel).padStart(2, "0")}/gate/thr`, argType: "f" as const, value: Math.max(0, Math.min(1, action.thresholdPercent / 100)) }]
+            : []),
+          ...(typeof action.rangePercent === "number"
+            ? [{ address: `/ch/${String(channel).padStart(2, "0")}/gate/range`, argType: "f" as const, value: Math.max(0, Math.min(1, action.rangePercent / 100)) }]
+            : []),
+        ];
+        await callX18({ type: "preset", commands });
+        setX18Message(`Gate da X18 ajustado no canal ${channel}`);
+      }
+      return;
+    }
+    if (action.type === "x18Compressor") {
+      const channel = resolveX18Channel(action.channel, action.channelName, settings.x18.channelMap);
+      if (channel) {
+        const commands = [
+          { address: `/ch/${String(channel).padStart(2, "0")}/dyn/on`, argType: "i" as const, value: action.enabled ? 1 : 0 },
+          ...(typeof action.thresholdPercent === "number"
+            ? [{ address: `/ch/${String(channel).padStart(2, "0")}/dyn/thr`, argType: "f" as const, value: Math.max(0, Math.min(1, action.thresholdPercent / 100)) }]
+            : []),
+          ...(typeof action.ratioPercent === "number"
+            ? [{ address: `/ch/${String(channel).padStart(2, "0")}/dyn/ratio`, argType: "f" as const, value: Math.max(0, Math.min(1, action.ratioPercent / 100)) }]
+            : []),
+          ...(typeof action.makeupPercent === "number"
+            ? [{ address: `/ch/${String(channel).padStart(2, "0")}/dyn/mgain`, argType: "f" as const, value: Math.max(0, Math.min(1, action.makeupPercent / 100)) }]
+            : []),
+        ];
+        await callX18({ type: "preset", commands });
+        setX18Message(`Compressor da X18 ajustado no canal ${channel}`);
+      }
+      return;
+    }
+    if (action.type === "x18MainMute") {
+      await callX18({ type: "mainMute", muted: action.muted });
+      setX18Message(`Main LR da X18 ${action.muted ? "mutado" : "aberto"}`);
+      return;
+    }
+    if (action.type === "x18RenameChannel") {
+      await callX18({ type: "renameChannel", channel: action.channel, name: action.name });
+      await updateX18Settings({
+        channelMap: settings.x18.channelMap.map((item) => (item.channel === action.channel ? { ...item, name: action.name } : item)),
+      });
+      setX18Message(`X18 canal ${action.channel} renomeado para ${action.name}`);
+      return;
+    }
+    if (action.type === "x18ApplyPreset") {
+      const commands = buildX18PresetCommands(action.presetName, settings.x18.channelMap);
+      if (commands.length) {
+        await callX18({ type: "preset", commands });
+        setX18Message(`Preset ${action.presetName} aplicado na X18`);
+      }
+      return;
+    }
+    if (action.type === "x18Osc") {
+      await callX18({ type: "preset", commands: [{ address: action.address, argType: action.argType, value: action.value }] });
+      setX18Message(`OSC enviado para ${action.address}`);
       return;
     }
     if (action.type === "connectObs") {
@@ -2346,6 +2540,71 @@ function normalizeLoose(value: string) {
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
     .trim();
+}
+
+function resolveX18Channel(channel: number | undefined, channelName: string | undefined, channelMap: X18ChannelMapItem[]) {
+  if (typeof channel === "number") return channel;
+  if (!channelName) return undefined;
+  return (
+    channelMap.find((item) => normalizeLoose(item.name) === normalizeLoose(channelName))?.channel ||
+    channelMap.find((item) => normalizeLoose(item.name).includes(normalizeLoose(channelName)))?.channel
+  );
+}
+
+function buildX18PresetCommands(presetName: string, channelMap: X18ChannelMapItem[]) {
+  const findChannel = (name: string) => resolveX18Channel(undefined, name, channelMap);
+  const commands: Array<{ address: string; argType: "f" | "i" | "s"; value: number | string }> = [];
+  const setFader = (channelName: string, levelPercent: number) => {
+    const channel = findChannel(channelName);
+    if (!channel) return;
+    commands.push({ address: `/ch/${String(channel).padStart(2, "0")}/mix/fader`, argType: "f", value: Math.max(0, Math.min(1, levelPercent / 100)) });
+  };
+  const setMute = (channelName: string, muted: boolean) => {
+    const channel = findChannel(channelName);
+    if (!channel) return;
+    commands.push({ address: `/ch/${String(channel).padStart(2, "0")}/mix/on`, argType: "i", value: muted ? 0 : 1 });
+  };
+
+  const normalized = normalizeLoose(presetName);
+  if (normalized.includes("pregacao") || normalized.includes("pregacao")) {
+    setFader("Mic Pastor", 78);
+    setMute("Teclado", true);
+    setMute("Bateria", true);
+    setMute("Baixo", true);
+    setMute("Guitarra", true);
+    setMute("Instrumentos", true);
+  } else if (normalized.includes("louvor")) {
+    setFader("Mic Pastor", 72);
+    setFader("Teclado", 70);
+    setFader("Bateria", 66);
+    setFader("Baixo", 64);
+    setFader("Guitarra", 66);
+    setMute("Instrumentos", false);
+  } else if (normalized.includes("seguranca") || normalized.includes("segurança")) {
+    setFader("Mic Pastor", 60);
+    setFader("Teclado", 40);
+    setFader("Bateria", 36);
+    setFader("Baixo", 38);
+    setFader("Guitarra", 38);
+    setMute("Playback", true);
+    setMute("Reaper", true);
+  } else if (normalized.includes("retorno-pastor")) {
+    const channel = findChannel("Mic Pastor");
+    if (channel) {
+      commands.push({ address: `/ch/${String(channel).padStart(2, "0")}/mix/01/level`, argType: "f", value: 0.72 });
+      commands.push({ address: `/ch/${String(channel).padStart(2, "0")}/mix/02/level`, argType: "f", value: 0.62 });
+    }
+  } else if (normalized.includes("live")) {
+    setFader("Mic Pastor", 74);
+    setFader("Teclado", 60);
+    setFader("Bateria", 54);
+    setFader("Baixo", 56);
+    setFader("Guitarra", 58);
+    setMute("Playback", false);
+    setMute("Reaper", false);
+  }
+
+  return commands;
 }
 
 const inputClass =

@@ -4,6 +4,19 @@ export type ObsSettings = {
   password: string;
 };
 
+export type X18ChannelMapItem = {
+  channel: number;
+  name: string;
+  color?: string;
+};
+
+export type X18Settings = {
+  enabled: boolean;
+  ip: string;
+  port: number;
+  channelMap: X18ChannelMapItem[];
+};
+
 export type HermesSceneRole = "aguardando" | "louvor" | "oferta" | "biblia" | "pregacao" | "encerramento";
 
 export type HermesMonitorSource = "webAudio" | "obs" | "estimated";
@@ -117,6 +130,7 @@ export type StoredAudioPreset = {
 export type AppSettings = {
   id: "app-settings";
   obs: ObsSettings;
+  x18: X18Settings;
   hermes: HermesSettings;
 };
 
@@ -240,6 +254,20 @@ export type HermesAction =
   | { type: "record"; action: RecordAction }
   | { type: "studioMode"; enabled: boolean }
   | { type: "triggerTransition" }
+  | { type: "connectX18" }
+  | { type: "configureX18"; ip?: string; port?: number }
+  | { type: "x18Fader"; channel?: number; channelName?: string; levelPercent: number }
+  | { type: "x18Mute"; channel?: number; channelName?: string; muted: boolean }
+  | { type: "x18Send"; channel?: number; channelName?: string; bus: number; levelPercent: number }
+  | { type: "x18Gain"; channel: number; gainPercent: number }
+  | { type: "x18Phantom"; channel: number; enabled: boolean }
+  | { type: "x18Eq"; channel?: number; channelName?: string; band: 1 | 2 | 3 | 4; gainPercent: number; frequencyPercent?: number; qPercent?: number; enabled?: boolean }
+  | { type: "x18Gate"; channel?: number; channelName?: string; enabled: boolean; thresholdPercent?: number; rangePercent?: number }
+  | { type: "x18Compressor"; channel?: number; channelName?: string; enabled: boolean; thresholdPercent?: number; ratioPercent?: number; makeupPercent?: number }
+  | { type: "x18MainMute"; muted: boolean }
+  | { type: "x18RenameChannel"; channel: number; name: string }
+  | { type: "x18ApplyPreset"; presetName: string }
+  | { type: "x18Osc"; address: string; argType: "f" | "i" | "s"; value: number | string }
   | { type: "connectObs" }
   | { type: "disconnectObs" }
   | { type: "configureObs"; host?: string; port?: number; password?: string }
