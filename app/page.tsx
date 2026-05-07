@@ -7,10 +7,14 @@ import { db, DEFAULT_SETTINGS } from "@/lib/db";
 import { DEFAULT_CULTO_STEPS, DEFAULT_HERMES_RULES, applyAudioMetrics, evaluateHermesRules, getCultoStep, syncHermesChannels, volumePercentToDb } from "@/lib/hermes";
 import {
   changeScene,
+  createInput,
+  createScene,
   connectToObs,
   controlMediaSource,
   connectOBS,
+  getRecordActive,
   getStreamActive,
+  getStudioModeEnabled,
   loadAudioInputs,
   loadMediaSources,
   loadSceneItems,
@@ -18,13 +22,19 @@ import {
   muteInput,
   obs,
   replaceMediaInSource,
+  removeInput,
+  removeScene,
+  setPreviewScene,
+  setRecordState,
   setInputMute,
   setInputVolume,
   setVolume,
   setSceneItemVisibility,
+  setStudioModeEnabled,
   setStreamState,
   switchScene,
   toggleInputMute,
+  triggerStudioModeTransition,
 } from "@/lib/obs";
 import type {
   AppSettings,
@@ -94,6 +104,8 @@ export default function HomePage() {
   const [loadingConnection, setLoadingConnection] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState("Pronto para conectar");
   const [streamActive, setStreamActive] = useState(false);
+  const [recordActive, setRecordActive] = useState(false);
+  const [studioModeEnabled, setStudioModeState] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
   const [scenes, setScenes] = useState<ObsScene[]>([]);
   const [audioInputs, setAudioInputs] = useState<ObsAudioInput[]>([]);
@@ -250,11 +262,14 @@ export default function HomePage() {
       loadMediaSources(),
       getStreamActive(),
     ]);
+    const [nextRecord, nextStudioMode] = await Promise.all([getRecordActive().catch(() => false), getStudioModeEnabled().catch(() => false)]);
 
     setScenes(nextScenes);
     setAudioInputs(nextAudio);
     setMediaSources(nextMedia);
     setStreamActive(nextStream);
+    setRecordActive(nextRecord);
+    setStudioModeState(nextStudioMode);
     setHermesChannels((current) => {
       const synced = syncHermesChannels(current, nextAudio);
       void db.hermesChannels.bulkPut(synced);
@@ -748,9 +763,22 @@ export default function HomePage() {
             content: message.content,
           })),
           context: {
+            activeTab,
+            obsConnected,
+            obsHost: settings.obs.host,
+            obsPort: settings.obs.port,
+            streamActive,
+            recordActive,
+            studioModeEnabled,
             currentScene,
             autoMode: settings.hermes.autoMode,
             scenes: scenes.map((scene) => scene.name),
+            sceneMap: settings.hermes.sceneMap,
+            buttons: buttons.map((button) => ({ name: button.name, type: button.type })),
+            macros: macros.map((macro) => ({ name: macro.name, actionCount: macro.actions.length })),
+            mediaSources: mediaSources.map((source) => ({ inputName: source.inputName, inputKind: source.inputKind })),
+            mediaItems: mediaItems.map((item) => ({ id: item.id, name: item.name, kind: item.kind })),
+            audioPresets: allAudioPresets.map((preset) => preset.name),
             channels: hermesChannels.map((channel) => ({
               inputName: channel.inputName,
               name: channel.name,
@@ -805,8 +833,27 @@ export default function HomePage() {
   }
 
   async function executeHermesAction(action: HermesAction) {
+    if (action.type === "navigateTab") {
+      setActiveTab(action.tab);
+      return;
+    }
     if (action.type === "scene") {
       await handleSceneClick(action.sceneName);
+      return;
+    }
+    if (action.type === "previewScene") {
+      await setPreviewScene(action.sceneName);
+      await refreshObsState();
+      return;
+    }
+    if (action.type === "createScene") {
+      await createScene(action.sceneName);
+      await refreshObsState();
+      return;
+    }
+    if (action.type === "deleteScene") {
+      await removeScene(action.sceneName);
+      await refreshObsState();
       return;
     }
     if (action.type === "volume") {
@@ -819,6 +866,217 @@ export default function HomePage() {
     if (action.type === "mute") {
       await muteInput(action.inputName, action.state);
       await refreshObsState();
+      return;
+    }
+    if (action.type === "stream") {
+      await setStreamState(action.action);
+      await refreshObsState();
+      return;
+    }
+    if (action.type === "record") {
+      await setRecordState(action.action);
+      await refreshObsState();
+      return;
+    }
+    if (action.type === "studioMode") {
+      await setStudioModeEnabled(action.enabled);
+      await refreshObsState();
+      return;
+    }
+    if (action.type === "triggerTransition") {
+      await triggerStudioModeTransition();
+      await refreshObsState();
+      return;
+    }
+    if (action.type === "connectObs") {
+      await connectObs();
+      return;
+    }
+    if (action.type === "disconnectObs") {
+      await disconnectObs();
+      return;
+    }
+    if (action.type === "configureObs") {
+      const nextSettings = mergeSettings({
+        ...settings,
+        obs: {
+          ...settings.obs,
+          ...(action.host ? { host: action.host } : {}),
+          ...(typeof action.port === "number" ? { port: action.port } : {}),
+          ...(typeof action.password === "string" ? { password: action.password } : {}),
+        },
+      });
+      setSettings(nextSettings);
+      await db.settings.put(nextSettings);
+      return;
+    }
+    if (action.type === "setSceneMap") {
+      await saveHermesScene(action.role, action.sceneName);
+      return;
+    }
+    if (action.type === "speakResponses") {
+      await updateHermesSettings({ speakResponses: action.enabled });
+      return;
+    }
+    if (action.type === "createButton") {
+      const button: StoredButton = {
+        name: action.name,
+        type: action.buttonType,
+        color: action.color || "#1dd3b0",
+        payload:
+          action.buttonType === "scene"
+            ? { sceneName: action.sceneName || "" }
+            : action.buttonType === "audio"
+              ? {
+                  inputName: action.inputName || "",
+                  mode: action.audioMode || "toggleMute",
+                  volumePercent: action.volumePercent,
+                }
+              : action.buttonType === "macro"
+                ? { macroId: action.macroId || 0 }
+                : {
+                    sourceName: action.sourceName || "",
+                    mode: action.mediaMode || "play",
+                    mediaId: action.mediaId,
+                    sceneName: action.sceneName,
+                    sceneItemId: action.sceneItemId,
+                    settingKey: action.settingKey || "local_file",
+                  },
+        createdAt: new Date().toISOString(),
+      };
+      await db.buttons.add(button);
+      await loadLocalData();
+      return;
+    }
+    if (action.type === "createMacro") {
+      await db.macros.add({
+        name: action.name,
+        actions: action.actions?.length ? action.actions : [createMacroAction()],
+        createdAt: new Date().toISOString(),
+      });
+      await loadLocalData();
+      return;
+    }
+    if (action.type === "createAudioPreset") {
+      await db.audioPresets.add({
+        name: action.name,
+        description: action.description || "Preset criado pelo Hermes.",
+        color: action.color || "#38bdf8",
+        system: false,
+        applyToUnmatched: action.applyToUnmatched ?? true,
+        fallbackVolumePercent: action.fallbackVolumePercent ?? 20,
+        fallbackMuted: action.fallbackMuted ?? false,
+        rules: action.rules || [],
+        createdAt: new Date().toISOString(),
+      });
+      await loadLocalData();
+      return;
+    }
+    if (action.type === "applyAudioPreset") {
+      const preset = allAudioPresets.find((item) => item.name.toLowerCase() === action.presetName.toLowerCase());
+      if (preset) {
+        await applyAudioPreset(preset);
+      }
+      return;
+    }
+    if (action.type === "createRecommendedPreset") {
+      const preset = recommendedAudioPresets.find((item) => item.name.toLowerCase() === action.presetName.toLowerCase());
+      if (preset) {
+        await db.audioPresets.put({
+          ...preset,
+          id: undefined,
+          system: false,
+          createdAt: new Date().toISOString(),
+        });
+        await loadLocalData();
+      }
+      return;
+    }
+    if (action.type === "deleteButton") {
+      const button = buttons.find((item) => item.name.toLowerCase() === action.buttonName.toLowerCase());
+      if (button?.id) {
+        await removeButton(button.id);
+      }
+      return;
+    }
+    if (action.type === "runButton") {
+      const button = buttons.find((item) => item.name.toLowerCase() === action.buttonName.toLowerCase());
+      if (button) {
+        await runButton(button);
+      }
+      return;
+    }
+    if (action.type === "deleteMacro") {
+      const macro = macros.find((item) => item.name.toLowerCase() === action.macroName.toLowerCase());
+      if (macro?.id) {
+        await deleteMacro(macro.id);
+      }
+      return;
+    }
+    if (action.type === "runMacro") {
+      const macro = macros.find((item) => item.name.toLowerCase() === action.macroName.toLowerCase());
+      if (macro) {
+        await runMacro(macro);
+      }
+      return;
+    }
+    if (action.type === "deleteAudioPreset") {
+      const preset = customAudioPresets.find((item) => item.name.toLowerCase() === action.presetName.toLowerCase());
+      if (preset?.id) {
+        await removeAudioPreset(preset.id);
+      }
+      return;
+    }
+    if (action.type === "createInput") {
+      await createInput({
+        sceneName: action.sceneName,
+        inputName: action.inputName,
+        inputKind: action.inputKind,
+        inputSettings: action.inputSettings,
+        sceneItemEnabled: action.sceneItemEnabled,
+      });
+      await refreshObsState();
+      return;
+    }
+    if (action.type === "deleteInput") {
+      await removeInput(action.inputName);
+      await refreshObsState();
+      return;
+    }
+    if (action.type === "media") {
+      const sourceName = action.sourceName || "";
+      const mediaName = action.mediaName || "";
+      const sceneItemName = action.sceneItemName || "";
+      const sceneName = action.sceneName || "";
+
+      const matchedSource = sourceName
+        ? mediaSources.find((item) => normalizeLoose(item.inputName) === normalizeLoose(sourceName))?.inputName ||
+          mediaSources.find((item) => normalizeLoose(item.inputName).includes(normalizeLoose(sourceName)))?.inputName ||
+          sourceName
+        : "";
+      const matchedMediaId =
+        action.mediaId ||
+        (mediaName
+          ? mediaItems.find((item) => normalizeLoose(item.name) === normalizeLoose(mediaName))?.id ||
+            mediaItems.find((item) => normalizeLoose(item.name).includes(normalizeLoose(mediaName)))?.id
+          : undefined);
+      const matchedSceneItemId =
+        action.sceneItemId ||
+        (sceneName && sceneItemName
+          ? sceneItems.find(
+              (item) =>
+                normalizeLoose(item.sceneName) === normalizeLoose(sceneName) && normalizeLoose(item.sourceName).includes(normalizeLoose(sceneItemName)),
+            )?.sceneItemId
+          : undefined);
+
+      await executeMediaAction({
+        sourceName: matchedSource,
+        mode: action.mode,
+        mediaId: matchedMediaId,
+        sceneName: sceneName,
+        sceneItemId: matchedSceneItemId,
+        settingKey: action.settingKey,
+      });
       return;
     }
     if (action.type === "autoMode") {
@@ -2080,6 +2338,14 @@ function speakText(text: string) {
   utterance.lang = "pt-BR";
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(utterance);
+}
+
+function normalizeLoose(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim();
 }
 
 const inputClass =

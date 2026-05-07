@@ -25,6 +25,7 @@ export type StoredButtonType = "scene" | "audio" | "media" | "macro";
 export type MacroActionKind = "scene" | "stream" | "audio" | "media";
 
 export type StreamAction = "start" | "stop";
+export type RecordAction = "start" | "stop";
 export type AudioActionMode = "toggleMute" | "setVolume";
 export type MediaActionMode = "replace" | "play" | "stop" | "show" | "hide";
 
@@ -228,9 +229,80 @@ export type HermesChatMessage = {
 };
 
 export type HermesAction =
+  | { type: "navigateTab"; tab: "buttons" | "audio" | "media" | "hermes" | "config" }
   | { type: "scene"; sceneName: string }
+  | { type: "previewScene"; sceneName: string }
+  | { type: "createScene"; sceneName: string }
+  | { type: "deleteScene"; sceneName: string }
   | { type: "volume"; inputName: string; deltaPercent: number }
   | { type: "mute"; inputName: string; state: boolean }
+  | { type: "stream"; action: StreamAction }
+  | { type: "record"; action: RecordAction }
+  | { type: "studioMode"; enabled: boolean }
+  | { type: "triggerTransition" }
+  | { type: "connectObs" }
+  | { type: "disconnectObs" }
+  | { type: "configureObs"; host?: string; port?: number; password?: string }
+  | { type: "setSceneMap"; role: HermesSceneRole; sceneName: string }
+  | { type: "speakResponses"; enabled: boolean }
+  | {
+      type: "createButton";
+      name: string;
+      color?: string;
+      buttonType: StoredButtonType;
+      sceneName?: string;
+      inputName?: string;
+      audioMode?: AudioActionMode;
+      volumePercent?: number;
+      macroId?: number;
+      sourceName?: string;
+      mediaMode?: MediaActionMode;
+      mediaId?: number;
+      sceneItemId?: number;
+      settingKey?: "file" | "local_file";
+    }
+  | {
+      type: "createMacro";
+      name: string;
+      actions: MacroAction[];
+    }
+  | {
+      type: "createAudioPreset";
+      name: string;
+      description?: string;
+      color?: string;
+      fallbackVolumePercent?: number;
+      fallbackMuted?: boolean;
+      applyToUnmatched?: boolean;
+      rules: AudioPresetRule[];
+    }
+  | { type: "applyAudioPreset"; presetName: string }
+  | { type: "createRecommendedPreset"; presetName: string }
+  | { type: "deleteButton"; buttonName: string }
+  | { type: "runButton"; buttonName: string }
+  | { type: "deleteMacro"; macroName: string }
+  | { type: "runMacro"; macroName: string }
+  | { type: "deleteAudioPreset"; presetName: string }
+  | {
+      type: "createInput";
+      sceneName: string;
+      inputName: string;
+      inputKind: string;
+      inputSettings?: Record<string, unknown>;
+      sceneItemEnabled?: boolean;
+    }
+  | { type: "deleteInput"; inputName: string }
+  | {
+      type: "media";
+      sourceName?: string;
+      mediaName?: string;
+      mode: MediaActionMode;
+      mediaId?: number;
+      sceneName?: string;
+      sceneItemId?: number;
+      sceneItemName?: string;
+      settingKey?: "file" | "local_file";
+    }
   | { type: "autoMode"; enabled: boolean }
   | { type: "startCulto" }
   | { type: "status" };

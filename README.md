@@ -63,6 +63,14 @@ npm run dev
 
 Abra `http://localhost:3000`.
 
+## Rodando com Docker
+
+```bash
+docker compose up --build
+```
+
+Abra `http://localhost:3000`.
+
 ## Hermes Chat
 
 O chat do Hermes roda na aba `Hermes` e usa a rota `app/api/hermes/chat`.

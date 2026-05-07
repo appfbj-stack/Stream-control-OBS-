@@ -1,0 +1,19 @@
+services:
+  stream-control-obs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stream-control-obs
+    env_file:
+      - .env.local
+    ports:
+      - "3010:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      OPENROUTER_MODEL: deepseek/deepseek-chat-v3-0324
+      OPENROUTER_SITE_URL: http://localhost:3000
+      OPENROUTER_APP_NAME: Hermes AI Controller
+      OPENAI_MODEL: gpt-4.1-mini
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: llama3.1

@@ -11,18 +11,34 @@ type RequestBody = {
   systemPrompt: string;
   messages: RequestMessage[];
   context: {
+    activeTab: string;
+    obsConnected: boolean;
+    obsHost: string;
+    obsPort: number;
+    streamActive: boolean;
+    recordActive: boolean;
+    studioModeEnabled: boolean;
     currentScene: string;
     autoMode: boolean;
     scenes: string[];
+    sceneMap: Record<string, string>;
+    buttons: Array<{ name: string; type: string }>;
+    macros: Array<{ name: string; actionCount: number }>;
+    mediaSources: Array<{ inputName: string; inputKind?: string }>;
+    mediaItems: Array<{ id?: number; name: string; kind: string }>;
+    audioPresets: string[];
     channels: Array<{ inputName: string; name: string; currentVolumePercent: number; currentDb: number; muted: boolean }>;
   };
 };
 
 const instruction = [
   "Voce e Hermes AI Controller, operador de culto e OBS.",
+  "Voce tambem e especialista em OBS Studio, obs-websocket, Behringer X18/XR18, Reaper e fluxo de audio para streaming ao vivo.",
+  "Explique configuracoes tecnicas passo a passo quando o usuario pedir ajuda.",
   "Responda sempre em JSON puro, sem markdown.",
   'Formato: {"reply":"texto","actions":[...]}',
-  'Acoes permitidas: {"type":"scene","sceneName":"..."}, {"type":"volume","inputName":"...","deltaPercent":8}, {"type":"mute","inputName":"...","state":true}, {"type":"autoMode","enabled":true}, {"type":"startCulto"}, {"type":"status"}',
+  'Acoes permitidas: {"type":"navigateTab","tab":"buttons|audio|media|hermes|config"}, {"type":"scene","sceneName":"..."}, {"type":"previewScene","sceneName":"..."}, {"type":"createScene","sceneName":"..."}, {"type":"deleteScene","sceneName":"..."}, {"type":"volume","inputName":"...","deltaPercent":8}, {"type":"mute","inputName":"...","state":true}, {"type":"stream","action":"start|stop"}, {"type":"record","action":"start|stop"}, {"type":"studioMode","enabled":true}, {"type":"triggerTransition"}, {"type":"connectObs"}, {"type":"disconnectObs"}, {"type":"configureObs","host":"...","port":4455,"password":"..."}, {"type":"setSceneMap","role":"aguardando|louvor|oferta|biblia|pregacao|encerramento","sceneName":"..."}, {"type":"speakResponses","enabled":true}, {"type":"createButton","name":"...","buttonType":"scene|audio|media|macro","sceneName":"...","inputName":"...","audioMode":"toggleMute|setVolume","volumePercent":70,"macroId":1,"sourceName":"...","mediaMode":"play|stop|replace|show|hide","mediaId":1,"settingKey":"local_file"}, {"type":"runButton","buttonName":"..."}, {"type":"deleteButton","buttonName":"..."}, {"type":"createMacro","name":"...","actions":[...]}, {"type":"runMacro","macroName":"..."}, {"type":"deleteMacro","macroName":"..."}, {"type":"createAudioPreset","name":"...","description":"...","color":"#38bdf8","fallbackVolumePercent":20,"fallbackMuted":false,"applyToUnmatched":true,"rules":[...]}, {"type":"applyAudioPreset","presetName":"..."}, {"type":"deleteAudioPreset","presetName":"..."}, {"type":"createRecommendedPreset","presetName":"Voz Limpa|Voz + Fundo|Banda / Louvor|Momento de Palavra|Seguranca Anti-Estouro"}, {"type":"createInput","sceneName":"...","inputName":"...","inputKind":"image_source|ffmpeg_source|browser_source|wasapi_input_capture|wasapi_output_capture","inputSettings":{},"sceneItemEnabled":true}, {"type":"deleteInput","inputName":"..."}, {"type":"media","sourceName":"...","mediaName":"...","mode":"play|stop|replace|show|hide","mediaId":1,"sceneName":"...","sceneItemId":10,"sceneItemName":"...","settingKey":"local_file"}, {"type":"autoMode","enabled":true}, {"type":"startCulto"}, {"type":"status"}',
+  "Voce pode operar boa parte do OBS pelo app: conexao, stream, gravacao, modo estudio, preview, transicao, criacao e exclusao de cenas, criacao e exclusao de fontes, audio, respostas por voz, criacao, execucao e exclusao de botoes, macros e presets, inclusive botoes de midia e acoes diretas em fontes de midia.",
   "Se o pedido for apenas conversa, use actions vazio.",
   "Se houver ambiguidade, responda de forma curta e nao invente nomes de cena ou canal fora do contexto.",
 ].join(" ");

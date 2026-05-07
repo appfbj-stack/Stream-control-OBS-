@@ -6,6 +6,7 @@ import type {
   ObsScene,
   ObsSceneItem,
   ObsSettings,
+  RecordAction,
   StreamAction,
 } from "@/lib/types";
 
@@ -58,35 +59,92 @@ export async function setStreamState(action: StreamAction) {
   await obs.call("StopStream");
 }
 
+export async function getRecordActive() {
+  const recordStatus = await obs.call("GetRecordStatus");
+  return Boolean(recordStatus.outputActive);
+}
+
+export async function setRecordState(action: RecordAction) {
+  if (action === "start") {
+    await obs.call("StartRecord");
+    return;
+  }
+  await obs.call("StopRecord");
+}
+
+export async function getStudioModeEnabled() {
+  const status = await obs.call("GetStudioModeEnabled");
+  return Boolean(status.studioModeEnabled);
+}
+
+export async function setStudioModeEnabled(enabled: boolean) {
+  await obs.call("SetStudioModeEnabled", { studioModeEnabled: enabled });
+}
+
+export async function setPreviewScene(sceneName: string) {
+  await obs.call("SetCurrentPreviewScene", { sceneName });
+}
+
+export async function triggerStudioModeTransition() {
+  await obs.call("TriggerStudioModeTransition");
+}
+
+export async function createScene(sceneName: string) {
+  await obs.call("CreateScene", { sceneName });
+}
+
+export async function removeScene(sceneName: string) {
+  await obs.call("RemoveScene", { sceneName });
+}
+
 export async function loadAudioInputs() {
   const response = (await obs.call("GetInputList")) as unknown as {
     inputs: Array<{ inputName: string; inputKind?: string }>;
   };
-  const inputs = response.inputs.filter((input: { inputKind?: string }) => {
-    const kind = input.inputKind?.toLowerCase() || "";
-    return kind.includes("audio") || kind.includes("mic") || kind.includes("wasapi") || kind.includes("ffmpeg");
-  });
+  const channels: Array<ObsAudioInput | null> = await Promise.all(
+    response.inputs.map(async (input: { inputName: string; inputKind?: string }): Promise<ObsAudioInput | null> => {
+      try {
+        const [volume, mute] = await Promise.all([
+          obs.call("GetInputVolume", { inputName: input.inputName }),
+          obs.call("GetInputMute", { inputName: input.inputName }),
+        ]);
 
-  const channels = await Promise.all(
-    inputs.map(async (input: { inputName: string; inputKind?: string }) => {
-      const [volume, mute] = await Promise.all([
-        obs.call("GetInputVolume", { inputName: input.inputName }),
-        obs.call("GetInputMute", { inputName: input.inputName }),
-      ]);
+        const kind = input.inputKind?.toLowerCase() || "";
+        const looksLikeAudio =
+          kind.includes("audio") ||
+          kind.includes("mic") ||
+          kind.includes("wasapi") ||
+          kind.includes("ffmpeg") ||
+          kind.includes("asio") ||
+          kind.includes("pulse") ||
+          kind.includes("coreaudio") ||
+          kind.includes("jack") ||
+          kind.includes("browser") ||
+          kind.includes("vlc");
 
-      const volumeMul = Number(volume.inputVolumeMul ?? 0);
-      return {
-        inputName: input.inputName,
-        inputKind: input.inputKind,
-        volumeMul,
-        volumePercent: Math.round(volumeMul * 100),
-        volumeDb: typeof volume.inputVolumeDb === "number" ? Number(volume.inputVolumeDb) : undefined,
-        muted: Boolean(mute.inputMuted),
-      } satisfies ObsAudioInput;
+        const volumeMul = Number(volume.inputVolumeMul ?? 0);
+        const muted = Boolean(mute.inputMuted);
+        const hasAudioControls = typeof volume.inputVolumeMul === "number" || typeof volume.inputVolumeDb === "number" || typeof mute.inputMuted === "boolean";
+
+        if (!looksLikeAudio && !hasAudioControls) {
+          return null;
+        }
+
+        return {
+          inputName: input.inputName,
+          ...(input.inputKind ? { inputKind: input.inputKind } : {}),
+          volumeMul,
+          volumePercent: Math.round(volumeMul * 100),
+          volumeDb: typeof volume.inputVolumeDb === "number" ? Number(volume.inputVolumeDb) : undefined,
+          muted,
+        } satisfies ObsAudioInput;
+      } catch {
+        return null;
+      }
     }),
   );
 
-  return channels;
+  return channels.filter((channel): channel is ObsAudioInput => channel !== null);
 }
 
 export async function setInputVolume(inputName: string, volumePercent: number) {
@@ -128,6 +186,26 @@ export async function loadMediaSources() {
       inputName: input.inputName,
       inputKind: input.inputKind,
     })) satisfies ObsMediaSource[];
+}
+
+export async function createInput(input: {
+  sceneName: string;
+  inputName: string;
+  inputKind: string;
+  inputSettings?: Record<string, unknown>;
+  sceneItemEnabled?: boolean;
+}) {
+  await obs.call("CreateInput", {
+    sceneName: input.sceneName,
+    inputName: input.inputName,
+    inputKind: input.inputKind,
+    inputSettings: (input.inputSettings || {}) as never,
+    sceneItemEnabled: input.sceneItemEnabled ?? true,
+  });
+}
+
+export async function removeInput(inputName: string) {
+  await obs.call("RemoveInput", { inputName });
 }
 
 export async function replaceMediaInSource(sourceName: string, media: MediaItem, settingKey: "file" | "local_file") {
