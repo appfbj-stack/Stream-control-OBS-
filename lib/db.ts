@@ -58,6 +58,22 @@ export const DEFAULT_SETTINGS: AppSettings = {
       { channel: 7, name: "Playback", color: "#14b8a6" },
       { channel: 8, name: "Reaper", color: "#f43f5e" },
     ],
+    mixProfiles: {
+      igreja: {
+        key: "igreja",
+        label: "Igreja",
+        description: "Campo separado para a mix base do culto no salão.",
+        source: "x18",
+        channels: [],
+      },
+      live: {
+        key: "live",
+        label: "Live",
+        description: "Campo separado para a mix pronta da transmissão.",
+        source: "x18",
+        channels: [],
+      },
+    },
   },
   hermes: {
     autoMode: false,

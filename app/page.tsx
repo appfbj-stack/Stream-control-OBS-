@@ -44,6 +44,8 @@ import type {
   MacroAction,
   MediaActionMode,
   MediaItem,
+  MixProfileChannelState,
+  MixProfileSlot,
   StoredAudioPreset,
   ObsAudioInput,
   ObsMediaSource,
@@ -88,6 +90,8 @@ const initialAudioPresetForm = {
   description: "",
   color: "#38bdf8",
 };
+
+const mixProfileSlots: MixProfileSlot[] = ["igreja", "live"];
 
 function createMacroAction(): MacroAction {
   return {
@@ -349,6 +353,96 @@ export default function HomePage() {
       setX18Connected(false);
       setX18Message(error instanceof Error ? error.message : "Falha ao conectar com a X18.");
       throw error;
+    }
+  }
+
+  function getLiveMixInputs() {
+    if (audioInputs.length) {
+      return audioInputs.filter((input) => input.inputKind !== "placeholder");
+    }
+
+    if (!settings.x18.enabled) {
+      return [];
+    }
+
+    return settings.x18.channelMap.map((item) => ({
+      inputName: item.name,
+      inputKind: "x18",
+      volumeMul: (x18MixerState[item.channel]?.volumePercent ?? 50) / 100,
+      volumePercent: x18MixerState[item.channel]?.volumePercent ?? 50,
+      muted: x18MixerState[item.channel]?.muted ?? false,
+    }));
+  }
+
+  function buildCurrentMixProfileChannels(): MixProfileChannelState[] {
+    return getLiveMixInputs().map((input) => ({
+      channel: resolveX18Channel(undefined, input.inputName, settings.x18.channelMap),
+      inputName: input.inputName,
+      volumePercent: input.volumePercent,
+      muted: input.muted,
+      inputKind: input.inputKind,
+    }));
+  }
+
+  async function saveMixProfile(profile: MixProfileSlot) {
+    const currentChannels = buildCurrentMixProfileChannels();
+    const currentProfile = settings.x18.mixProfiles[profile];
+    const nextProfiles = {
+      ...settings.x18.mixProfiles,
+      [profile]: {
+        ...currentProfile,
+        channels: currentChannels,
+        source: audioInputs.length ? "obs" : "x18",
+        updatedAt: new Date().toISOString(),
+      },
+    };
+
+    await updateX18Settings({ mixProfiles: nextProfiles });
+    setCommandFeedback(`Mix ${currentProfile.label} salva com ${currentChannels.length} canais.`);
+  }
+
+  async function applyMixProfile(profile: MixProfileSlot) {
+    const snapshot = settings.x18.mixProfiles[profile];
+    if (!snapshot.channels.length) {
+      setCommandFeedback(`O campo ${snapshot.label} ainda está vazio.`);
+      return;
+    }
+
+    setBusyAction(`mix-profile-${profile}`);
+
+    try {
+      for (const channel of snapshot.channels) {
+        const x18Channel =
+          channel.inputKind === "x18" || (!audioInputs.length && settings.x18.enabled)
+            ? resolveX18Channel(channel.channel, channel.inputName, settings.x18.channelMap)
+            : undefined;
+
+        if (x18Channel) {
+          await callX18({ type: "fader", channel: x18Channel, levelPercent: channel.volumePercent });
+          await callX18({ type: "mute", channel: x18Channel, muted: channel.muted });
+          setX18MixerState((current) => ({
+            ...current,
+            [x18Channel]: {
+              volumePercent: channel.volumePercent,
+              muted: channel.muted,
+            },
+          }));
+          continue;
+        }
+
+        const input = audioInputs.find((item) => normalizeLoose(item.inputName) === normalizeLoose(channel.inputName));
+        if (!input) continue;
+        await setInputVolume(input.inputName, channel.volumePercent);
+        await setInputMute(input.inputName, channel.muted);
+      }
+
+      if (audioInputs.length) {
+        await refreshObsState();
+      }
+
+      setCommandFeedback(`Mix ${snapshot.label} aplicada.`);
+    } finally {
+      setBusyAction("");
     }
   }
 
@@ -857,6 +951,12 @@ export default function HomePage() {
             mediaSources: mediaSources.map((source) => ({ inputName: source.inputName, inputKind: source.inputKind })),
             mediaItems: mediaItems.map((item) => ({ id: item.id, name: item.name, kind: item.kind })),
             audioPresets: allAudioPresets.map((preset) => preset.name),
+            mixProfiles: mixProfileSlots.map((slot) => ({
+              key: slot,
+              label: settings.x18.mixProfiles[slot].label,
+              channelCount: settings.x18.mixProfiles[slot].channels.length,
+              updatedAt: settings.x18.mixProfiles[slot].updatedAt || "",
+            })),
             channels: hermesChannels.map((channel) => ({
               inputName: channel.inputName,
               name: channel.name,
@@ -968,6 +1068,14 @@ export default function HomePage() {
     }
     if (action.type === "connectX18") {
       await connectX18();
+      return;
+    }
+    if (action.type === "saveMixProfile") {
+      await saveMixProfile(action.profile);
+      return;
+    }
+    if (action.type === "applyMixProfile") {
+      await applyMixProfile(action.profile);
       return;
     }
     if (action.type === "configureX18") {
@@ -1314,18 +1422,7 @@ export default function HomePage() {
   }
 
   function paddedAudioInputs() {
-    const x18FallbackInputs: ObsAudioInput[] =
-      !audioInputs.length && settings.x18.enabled
-        ? settings.x18.channelMap.map((item) => ({
-            inputName: item.name,
-            inputKind: "x18",
-            volumeMul: (x18MixerState[item.channel]?.volumePercent ?? 50) / 100,
-            volumePercent: x18MixerState[item.channel]?.volumePercent ?? 50,
-            muted: x18MixerState[item.channel]?.muted ?? false,
-          }))
-        : [];
-
-    const liveInputs = audioInputs.length ? audioInputs : x18FallbackInputs;
+    const liveInputs = getLiveMixInputs();
     const normalizedPlaceholders = Array.from({ length: Math.max(0, 12 - liveInputs.length) }, (_, index) => ({
       inputName: `Canal livre ${index + 1}`,
       volumeMul: 0,
@@ -1980,6 +2077,40 @@ export default function HomePage() {
           </div>
 
           <Panel title="Mixer de áudio" subtitle="Volume e mute em tempo real para no mínimo 12 canais.">
+            <div className="mb-4 grid gap-4 lg:grid-cols-2">
+              {mixProfileSlots.map((slot) => {
+                const profile = settings.x18.mixProfiles[slot];
+                return (
+                  <div key={slot} className="rounded-[24px] border border-white/10 bg-white/5 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.18em] text-accent">Campo separado</p>
+                        <h3 className="mt-2 text-lg font-black text-white">{profile.label}</h3>
+                        <p className="mt-1 text-sm text-slate-300">{profile.description}</p>
+                        <p className="mt-2 text-xs uppercase tracking-[0.18em] text-slate-500">
+                          {profile.channels.length} canais {profile.updatedAt ? `• atualizado ${formatRelativeDate(profile.updatedAt)}` : "• vazio"}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          className="rounded-full bg-accent px-4 py-2 text-xs font-black text-slate-950"
+                          onClick={() => void saveMixProfile(slot)}
+                        >
+                          Salvar mix atual
+                        </button>
+                        <button
+                          className="rounded-full bg-white/10 px-4 py-2 text-xs font-bold text-white"
+                          disabled={!profile.channels.length || busyAction === `mix-profile-${slot}`}
+                          onClick={() => void applyMixProfile(slot)}
+                        >
+                          {busyAction === `mix-profile-${slot}` ? "Aplicando..." : "Aplicar mix"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
               {paddedAudioInputs().map((input) => (
                 <div key={input.inputName} className="rounded-[24px] border border-white/10 bg-white/5 p-4">
@@ -2330,6 +2461,17 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatRelativeDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "agora";
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
 function matchesAudioPresetRule(rule: StoredAudioPreset["rules"][number], inputName: string) {
   const normalizedInput = inputName.toLowerCase();
   return rule.matchValues.some((value) => {
@@ -2545,6 +2687,15 @@ function mergeSettings(settings: Partial<AppSettings> | AppSettings): AppSetting
     obs: {
       ...DEFAULT_SETTINGS.obs,
       ...settings.obs,
+    },
+    x18: {
+      ...DEFAULT_SETTINGS.x18,
+      ...settings.x18,
+      channelMap: settings.x18?.channelMap?.length ? settings.x18.channelMap : DEFAULT_SETTINGS.x18.channelMap,
+      mixProfiles: {
+        ...DEFAULT_SETTINGS.x18.mixProfiles,
+        ...settings.x18?.mixProfiles,
+      },
     },
     hermes: {
       ...DEFAULT_SETTINGS.hermes,

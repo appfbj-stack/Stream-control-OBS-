@@ -10,11 +10,31 @@ export type X18ChannelMapItem = {
   color?: string;
 };
 
+export type MixProfileSlot = "igreja" | "live";
+
+export type MixProfileChannelState = {
+  channel?: number;
+  inputName: string;
+  volumePercent: number;
+  muted: boolean;
+  inputKind?: string;
+};
+
+export type MixProfileState = {
+  key: MixProfileSlot;
+  label: string;
+  description: string;
+  source: "obs" | "x18" | "hybrid";
+  channels: MixProfileChannelState[];
+  updatedAt?: string;
+};
+
 export type X18Settings = {
   enabled: boolean;
   ip: string;
   port: number;
   channelMap: X18ChannelMapItem[];
+  mixProfiles: Record<MixProfileSlot, MixProfileState>;
 };
 
 export type HermesSceneRole = "aguardando" | "louvor" | "oferta" | "biblia" | "pregacao" | "encerramento";
@@ -267,6 +287,8 @@ export type HermesAction =
   | { type: "x18MainMute"; muted: boolean }
   | { type: "x18RenameChannel"; channel: number; name: string }
   | { type: "x18ApplyPreset"; presetName: string }
+  | { type: "saveMixProfile"; profile: MixProfileSlot }
+  | { type: "applyMixProfile"; profile: MixProfileSlot }
   | { type: "x18Osc"; address: string; argType: "f" | "i" | "s"; value: number | string }
   | { type: "connectObs" }
   | { type: "disconnectObs" }
