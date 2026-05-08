@@ -109,6 +109,7 @@ export default function HomePage() {
   const [studioModeEnabled, setStudioModeState] = useState(false);
   const [x18Connected, setX18Connected] = useState(false);
   const [x18Message, setX18Message] = useState("X18 pronta para conectar");
+  const [x18MixerState, setX18MixerState] = useState<Record<number, { volumePercent: number; muted: boolean }>>({});
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
   const [scenes, setScenes] = useState<ObsScene[]>([]);
   const [audioInputs, setAudioInputs] = useState<ObsAudioInput[]>([]);
@@ -372,6 +373,19 @@ export default function HomePage() {
   }
 
   async function handleVolumeChange(inputName: string, value: number) {
+    const x18Channel = resolveX18Channel(undefined, inputName, settings.x18.channelMap);
+    if (x18Channel && !audioInputs.some((item) => item.inputName === inputName)) {
+      await callX18({ type: "fader", channel: x18Channel, levelPercent: value });
+      setX18MixerState((current) => ({
+        ...current,
+        [x18Channel]: {
+          volumePercent: value,
+          muted: current[x18Channel]?.muted ?? false,
+        },
+      }));
+      return;
+    }
+
     setAudioInputs((current) => current.map((item) => (item.inputName === inputName ? { ...item, volumePercent: value, volumeMul: value / 100 } : item)));
     setHermesChannels((current) =>
       current.map((channel) =>
@@ -384,6 +398,19 @@ export default function HomePage() {
   }
 
   async function handleMuteToggle(input: ObsAudioInput) {
+    const x18Channel = input.inputKind === "x18" ? resolveX18Channel(undefined, input.inputName, settings.x18.channelMap) : undefined;
+    if (x18Channel) {
+      await callX18({ type: "mute", channel: x18Channel, muted: !input.muted });
+      setX18MixerState((current) => ({
+        ...current,
+        [x18Channel]: {
+          volumePercent: current[x18Channel]?.volumePercent ?? input.volumePercent,
+          muted: !input.muted,
+        },
+      }));
+      return;
+    }
+
     await muteInput(input.inputName, !input.muted);
     await refreshObsState();
   }
@@ -782,7 +809,7 @@ export default function HomePage() {
   }
 
   async function runHermesCommand() {
-    if (!commandText.trim()) return;
+    if (chatBusy || !commandText.trim()) return;
 
     const userMessage: HermesChatMessage = {
       id: crypto.randomUUID(),
@@ -1287,7 +1314,19 @@ export default function HomePage() {
   }
 
   function paddedAudioInputs() {
-    const placeholders = Array.from({ length: Math.max(0, 12 - audioInputs.length) }, (_, index) => ({
+    const x18FallbackInputs: ObsAudioInput[] =
+      !audioInputs.length && settings.x18.enabled
+        ? settings.x18.channelMap.map((item) => ({
+            inputName: item.name,
+            inputKind: "x18",
+            volumeMul: (x18MixerState[item.channel]?.volumePercent ?? 50) / 100,
+            volumePercent: x18MixerState[item.channel]?.volumePercent ?? 50,
+            muted: x18MixerState[item.channel]?.muted ?? false,
+          }))
+        : [];
+
+    const liveInputs = audioInputs.length ? audioInputs : x18FallbackInputs;
+    const normalizedPlaceholders = Array.from({ length: Math.max(0, 12 - liveInputs.length) }, (_, index) => ({
       inputName: `Canal livre ${index + 1}`,
       volumeMul: 0,
       volumePercent: 0,
@@ -1295,7 +1334,7 @@ export default function HomePage() {
       inputKind: "placeholder",
     }));
 
-    return [...audioInputs, ...placeholders];
+    return [...liveInputs, ...normalizedPlaceholders];
   }
 
   const currentScene = scenes.find((scene) => scene.isCurrent)?.name || "Nenhuma";

@@ -147,9 +147,19 @@ export function HermesController(props: HermesControllerProps) {
               rows={4}
               value={commandText}
               onChange={(event) => onCommandTextChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                  event.preventDefault();
+                  if (!chatBusy) onRunCommand();
+                }
+              }}
               placeholder="Ex.: Hermes, troca para louvor e baixa a música"
             />
-            <button className="rounded-full bg-accent px-5 py-3 text-sm font-black text-slate-950" onClick={onRunCommand}>
+            <button
+              className={`rounded-full px-5 py-3 text-sm font-black transition ${chatBusy ? "cursor-not-allowed bg-slate-500 text-slate-200" : "bg-accent text-slate-950"}`}
+              disabled={chatBusy}
+              onClick={onRunCommand}
+            >
               {chatBusy ? "Hermes pensando..." : "Enviar para Hermes"}
             </button>
             <div className="rounded-[22px] border border-white/10 bg-white/5 p-4 text-sm text-slate-300">{commandFeedback}</div>

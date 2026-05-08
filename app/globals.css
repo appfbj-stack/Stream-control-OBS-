@@ -17,3 +17,21 @@ body {
 input[type="range"] {
   accent-color: #1dd3b0;
 }
+
+input,
+textarea,
+select {
+  color: #f8fafc;
+  background-color: rgba(15, 23, 36, 0.92);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #94a3b8;
+}
+
+select option,
+select optgroup {
+  background-color: #0f1724;
+  color: #f8fafc;
+}
